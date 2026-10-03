@@ -414,6 +414,70 @@ Correctif : Neptune `22d94ed`. Le REGISTER et le RELEASE de ces jetons passent p
 Les 2 restants tombent la même seconde, pendant des images tenues 50 à 70 ms au chargement. La sonde de wsd note
 maintenant aussi ce que contient la mémoire à l'encodage et après le GPU.
 
+## Présentation de wsd et `NtYieldExecution` : mesurés, laissés tels quels (4 octobre, 00:30)
+
+### Où passent les 15,6 ms entre soumission et affichage
+
+Pour cette mesure, wsd datait chaque image :
+- réception ;
+- tick du display link, avec son `timestamp` et son `targetTimestamp` ;
+- `nextDrawable` et commit ;
+- début et fin du GPU ;
+- `presentedTime`.
+
+Toutes les 120 images, il écrivait les médianes. Cette datation n'est pas restée dans wsd. Conditions :
+- Free Play à 60 i/s, cadence `after` ;
+- écran externe à 240 Hz (ASUS XG27AQWMG, un rafraîchissement toutes les 4,17 ms) ;
+- les mêmes binaires que dans « Frame back ».
+
+| Segment (médianes par lot de 120 images) | Free Play |
+|---|---|
+| Envoi nptunix → wsd | 0,02 ms |
+| Attente du tick | 3,7 à 4,0 ms |
+| Retard du tick sur le vsync | 0,3 à 1,2 ms |
+| `nextDrawable` + encodage | 0,1 ms |
+| Commit → début du GPU | 0,55 ms |
+| GPU (copie dans le drawable) | 0,05 ms |
+| Fin du GPU → affichage | 10,8 à 11,5 ms |
+| **Soumission → affichage** | **15,6 à 16,0 ms** (11,9 ms quand la phase est favorable) |
+
+- **La composition coûte deux rafraîchissements.** 97 % des images s'affichent 3 rafraîchissements (12,5 ms) après le
+  vsync de leur tick, environ 1 % un plus tôt et environ 1 % un plus tard. Le GPU a pourtant fini 1,5 ms après ce
+  vsync. Le reste est la composition de macOS : la fenêtre a deux couches, celle de la fenêtre et celle du jeu
+  par-dessus.
+- **L'image attend presque un rafraîchissement entier avant d'être encodée.** Le jeu se cale sur l'évènement
+  « affichée » et renvoie son image juste après un tick. Quand l'image arrive juste avant un tick, l'attente tombe à
+  0,3 ou 0,5 ms, et le total à 11,9 ms.
+- **Sonde, 8 essais :** de l'entrée à la soumission, 40,5 ms en médiane (de 27,4 à 42,6 ms). Le total est donc
+  d'environ 56 ms.
+- nptunix attend 15,8 ms par `Present`. Aucun frame back pendant la mesure.
+
+Pistes chiffrées, non faites : l'utilisateur a jugé le gain trop faible.
+
+| Piste | Gain attendu à 240 Hz |
+|---|---|
+| Présenter dès l'arrivée quand aucune image du plan n'attend l'affichage, au lieu d'attendre le tick | De 0 à 4 ms, selon l'heure limite du compositeur, inconnue |
+| Affichage direct sans compositeur (une seule couche plein écran) | Jusqu'à 2 rafraîchissements (8,3 ms) si macOS l'accepte, ce qui n'est pas établi |
+| 2 drawables au lieu de 3 | Rien : avec la cadence `after`, une seule image est en vol |
+
+Sur un écran à 120 Hz, ces durées devraient doubler, mais ce n'est pas mesuré. L'estimation de 4 à 10 ms du tableau
+des couches supposait un tel écran.
+
+### `NtYieldExecution` : pas de changement
+
+- **Le jeu ignore la valeur de retour.** `RocketLeague.exe` appelle `SwitchToThread` depuis environ 70 endroits.
+  - La plupart sont des verrous en attente active : `lock cmpxchg` sur un octet, puis `pause` 1, 2, 4, 8 et 16 fois,
+    puis `SwitchToThread` à chaque nouvel essai.
+  - Les autres sont des boucles sur un drapeau global.
+  - Après chaque appel, `eax` est remis à zéro ou rechargé : la valeur de retour n'est jamais lue.
+- **Un yield moins cher n'économiserait pas de CPU.** Un fil dans ces boucles tourne jusqu'à ce que le verrou se
+  libère, quel que soit le coût d'un tour. Un yield moins cher donne plus de tours, pas moins de CPU. L'estimation
+  « environ 0,1 à 0,2 cœur » du tableau des couches était donc fausse : on gagnerait 2 appels système par yield, et
+  une reprise de verrou plus rapide de moins d'une microseconde.
+- **Décision de l'utilisateur : on ne touche à rien.** D'autres jeux peuvent lire la valeur de retour de
+  `SwitchToThread`. `thread_rusage` de LKD continue de renvoyer 0 changement de contexte, donc `SwitchToThread`
+  répond toujours FALSE sous le moteur.
+
 ## Mesures suivantes
 
 - **Appels système par thread et par type.** Le profil donne les totaux par thread et les types par processus, mais
@@ -422,7 +486,6 @@ maintenant aussi ce que contient la mémoire à l'encodage et après le GPU.
 - **Requêtes de wineserver par type** (point 4 ci-dessus).
 - **Temps d'image sans limite** (`NPT_WSD_PACING=off`, limite d'i/s du jeu au maximum), pour connaître la vraie marge
   et la pièce qui sature en premier.
-- **Chemin de présentation de wsd**, étape par étape.
 
 ## Reproduire
 
