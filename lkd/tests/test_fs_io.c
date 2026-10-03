@@ -242,6 +242,33 @@ LT_TEST(getdents_large_directory)
     LT_CHECK(ms < 150);
 }
 
+/* FS_IOC_GETFLAGS reports FS_CASEFOLD_FL on a directory of a case-insensitive host volume (default APFS). Wine checks
+ * it before listing a whole directory for each name it does not find as written (get_dir_case_sensitivity). */
+LT_TEST(ioctl_getflags_casefold)
+{
+    enum { GETFLAGS = 0x80086601, CASEFOLD = 0x40000000 };
+    const int insensitive = pathconf(ROOT, _PC_CASE_SENSITIVE) == 0;
+    LT_EQ(SC(T, mkdir, P("/cf"), 0755), 0);
+    LT_EQ(SC(T, close, gopen("/cf/f", LX_O_CREAT | LX_O_WRONLY, 0644)), 0);
+    int64_t d = gopen("/cf", LX_O_RDONLY | LX_O_NONBLOCK, 0);
+    LT_CHECK(d >= 0);
+    int32_t flags[2] = {-1, 0x5a5a5a5a};
+    LT_EQ(SC(T, ioctl, d, GETFLAGS, P(flags)), 0);
+    LT_EQ(flags[0], insensitive ? CASEFOLD : 0);
+    LT_EQ(flags[1], 0x5a5a5a5a); /* the kernel writes an int, not a long */
+    LT_EQ(SC(T, ioctl, d, GETFLAGS, 8), -LX_EFAULT);
+    SC(T, close, d);
+    int64_t f = gopen("/cf/f", LX_O_RDONLY, 0);
+    flags[0] = -1;
+    LT_EQ(SC(T, ioctl, f, GETFLAGS, P(flags)), 0);
+    LT_EQ(flags[0], 0); /* casefold is a directory flag */
+    SC(T, close, f);
+    int64_t pth = gopen("/cf", LX_O_PATH, 0);
+    LT_EQ(SC(T, ioctl, pth, GETFLAGS, P(flags)), -LX_EBADF);
+    SC(T, close, pth);
+    printf("INFO host volume case-%s\n", insensitive ? "insensitive" : "sensitive");
+}
+
 LT_TEST(getdents_formats)
 {
     LT_EQ(SC(T, mkdir, P("/dd"), 0755), 0);
@@ -495,6 +522,7 @@ int main(void)
     LT_RUN(sendfile_copy_range);
     LT_RUN(getdents_formats);
     LT_RUN(getdents_large_directory);
+    LT_RUN(ioctl_getflags_casefold);
     LT_RUN(namespace_ops);
     LT_RUN(open_rules);
     LT_RUN(attributes);

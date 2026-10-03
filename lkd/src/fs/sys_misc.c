@@ -300,6 +300,21 @@ out:
 /* ---- ioctl ------------------------------------------------------------------------------------- */
 
 #define LX_FIOQSIZE 0x5460
+#define LX_FS_IOC_GETFLAGS 0x80086601 /* _IOR('f', 1, long); the kernel reads and writes an int */
+#define LX_FS_CASEFOLD_FL 0x40000000
+
+/* FS_IOC_GETFLAGS (ioctl_getflags): a host file or directory has none of the ext2 attribute flags, except casefold:
+ * a directory of a case-insensitive host volume (APFS by default) is a casefolded directory, and its lookups are
+ * already case-insensitive. Wine reads this flag before listing a directory for each name it does not find as
+ * written. Virtual directories (procfs, mount points) answer ENOTTY, as procfs does. */
+static int64_t getflags(lkd_fdobj *o, uint64_t arg)
+{
+    if (o->ops != &fs_file_ops && o->ops != &fs_dir_ops) return -LX_ENOTTY;
+    if (o->host_fd < 0) return -LX_ENOTTY;
+    uint32_t fl = 0;
+    if (o->ops == &fs_dir_ops && fpathconf(o->host_fd, _PC_CASE_SENSITIVE) == 0) fl |= LX_FS_CASEFOLD_FL;
+    return lkd_user_write(arg, &fl, sizeof fl) < 0 ? -LX_EFAULT : 0;
+}
 
 LKD_SYSCALL(ioctl)
 {
@@ -341,6 +356,10 @@ LKD_SYSCALL(ioctl)
             break;
         }
         r = (o->ops && o->ops->ioctl) ? o->ops->ioctl(t, o, cmd, arg) : -LX_ENOTTY;
+        break;
+    case LX_FS_IOC_GETFLAGS:
+        r = getflags(o, arg);
+        if (r == -LX_ENOTTY && o->ops && o->ops->ioctl) r = o->ops->ioctl(t, o, cmd, arg);
         break;
     case LX_FIOQSIZE:
         if (o->ops == &fs_file_ops || o->ops == &fs_memfd_ops || o->ops == &fs_dir_ops) {
