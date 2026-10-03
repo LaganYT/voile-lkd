@@ -670,6 +670,7 @@ void LkdHandleSyscall(GuestThread* T, FEXCore::Core::CpuStateFrame* Frame) {
   const lkd_disp D = lkd_syscall(T->Task, &Rq, &Rax);
   if (T0) {
     HitchLog::NoteSyscall(T, Rq.nr, HitchLog::NowNs() - T0);
+    if (D == LKD_RETURN && Rax == -2) HitchLog::NoteMissingPath(Rq.nr, Rq.a);
   }
   switch (D) {
   case LKD_RETURN: St.gregs[X::REG_RAX] = static_cast<uint64_t>(Rax); break;

@@ -49,7 +49,8 @@ static int snapshot(lkd_task *t, lkd_fdobj *o, struct fs_file *f)
     int rc = 0;
     const char *gp = o->gpath ? o->gpath : "/";
     if (o->host_fd >= 0) {
-        int d = dup(o->host_fd);
+        /* the descriptor is open for search only (fs_open_host): read the same directory through "." */
+        int d = openat(o->host_fd, ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
         if (d < 0) return LKD_HOST_ERR();
         DIR *dir = fdopendir(d);
         if (!dir) { int e = (int)LKD_HOST_ERR(); close(d); return e; }

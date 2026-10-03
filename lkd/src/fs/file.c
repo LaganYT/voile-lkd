@@ -665,7 +665,10 @@ int fs_open_host(lkd_task *t, struct fs_res *r, uint32_t fl, uint32_t mode, int 
     if (created) hflags &= ~O_TRUNC;
     int is_dir = S_ISDIR(r->st.st_mode);
     int is_fifo = S_ISFIFO(r->st.st_mode);
-    if (is_dir) hflags = O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC;
+    /* A directory is opened for search only: macOS opens a directory for reading in about 7 us and for search in
+     * 1.6 us, and Wine opens directories for every name it does not find. Listing it reopens it for reading
+     * (snapshot in dir.c); stat, statfs, xattrs, chmod, utimes, fsync, flock and openat work on this descriptor. */
+    if (is_dir) hflags = O_SEARCH | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC;
     int hfd;
     if (is_fifo) {
         /* Linux fifo_open blocks a writer until a reader exists. Open non-blocking and retry

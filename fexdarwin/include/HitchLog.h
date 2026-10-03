@@ -34,6 +34,8 @@ void Add(Kind K, uint64_t Ns, uint64_t Bytes = 0);
 uint64_t NowNs();
 // Profile: one guest system call of thread T, Ns nanoseconds (wall time inside LKD).
 void NoteSyscall(GuestThread* T, uint64_t Nr, uint64_t Ns);
+// Profile: a path call that failed with ENOENT; one in FEXDARWIN_PROFILE_MISSES (1000) is logged with its path.
+void NoteMissingPath(uint64_t Nr, const uint64_t* Args);
 
 // Times a scope when the log is on.
 class Scope {

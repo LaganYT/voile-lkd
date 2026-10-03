@@ -410,6 +410,31 @@ void NoteSyscall(GuestThread* T, uint64_t Nr, uint64_t Ns) {
   Per[LKD_NR_TABLE_SIZE + Nr].fetch_add(Ns, std::memory_order_relaxed);
 }
 
+void NoteMissingPath(uint64_t Nr, const uint64_t* Args) {
+  static const uint64_t Every = [] {
+    const char* E = getenv("FEXDARWIN_PROFILE_MISSES");
+    const long N = E && *E ? atol(E) : 1000;
+    return static_cast<uint64_t>(N < 1 ? 1 : N);
+  }();
+  static std::atomic<uint64_t> Count {0};
+  int Dirfd;
+  uint64_t Path;
+  switch (Nr) {
+  case LKD_NR_openat:
+  case LKD_NR_newfstatat:
+  case LKD_NR_statx: Dirfd = static_cast<int>(Args[0]); Path = Args[1]; break;
+  case LKD_NR_getxattr:
+  case LKD_NR_lgetxattr: Dirfd = -100; Path = Args[0]; break;
+  default: return;
+  }
+  if (Count.fetch_add(1, std::memory_order_relaxed) % Every) return;
+  char Name[512];
+  if (lkd_user_strn(Path, Name, sizeof Name) < 0) return;
+  const char* Call = lkd_syscall_name(Nr);
+  fprintf(stderr, "[fexdarwin] pid %d missing path (%s, dirfd %d): %s\n", static_cast<int>(getpid()), Call ? Call : "?", Dirfd,
+          Name);
+}
+
 void Add(Kind K, uint64_t Ns, uint64_t Bytes) {
   if (K == Kind::SmcFault) {
     SmcNs.fetch_add(Ns, std::memory_order_relaxed);
