@@ -106,6 +106,23 @@ static int64_t x_set(lkd_task *t, struct xt *x, uint64_t name_g, uint64_t val_g,
     return r < 0 ? host_err() : 0;
 }
 
+/* macOS answers getxattr of a missing attribute in about 5.6 us and lists a file's attributes in about 1 us (Wine
+ * makes the same remark for its macOS build, xattr_exists). Wine for Linux reads two attributes of every file it
+ * stats or lists (user.WINEREPARSE, user.DOSATTRIB), which game files do not have: look in the list first. 1 when
+ * the attribute may exist (in the list, or the list could not be read), 0 when it does not. */
+static int host_may_have(const struct xt *x, const char *name)
+{
+    char all[4096];
+    ssize_t n = x->fd >= 0 ? flistxattr(x->fd, all, sizeof all, 0) : listxattr(x->path, all, sizeof all, XATTR_NOFOLLOW);
+    if (n < 0) return 1;
+    for (ssize_t p = 0; p < n;) {
+        size_t l = strnlen(all + p, (size_t)(n - p));
+        if (!strcmp(all + p, name)) return 1;
+        p += (ssize_t)l + 1;
+    }
+    return 0;
+}
+
 static int64_t x_get(lkd_task *t, struct xt *x, uint64_t name_g, uint64_t val_g, uint64_t size)
 {
     (void)t;
@@ -117,6 +134,7 @@ static int64_t x_get(lkd_task *t, struct xt *x, uint64_t name_g, uint64_t val_g,
     if (ns != NS_USER) return -LX_ENODATA;
     if (x->virt) return -LX_EOPNOTSUPP;
     if (!user_ok(x->mode)) return -LX_ENODATA;
+    if (!host_may_have(x, name)) return -LX_ENODATA;
     ssize_t need = x->fd >= 0 ? fgetxattr(x->fd, name, NULL, 0, 0, 0) : getxattr(x->path, name, NULL, 0, 0, XATTR_NOFOLLOW);
     if (need < 0) return host_err();
     if (size == 0) return need;

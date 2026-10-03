@@ -490,6 +490,24 @@ LT_TEST(xattrs)
     LT_EQ(SC(T, fremovexattr, fd, P("user.k")), 0);
     LT_EQ(SC(T, flistxattr, fd, P(list), sizeof list), 0);
     SC(T, close, fd);
+    /* getxattr looks in the attribute list first: a list longer than LKD's 4 KiB buffer still finds its last entry */
+    char name[160];
+    for (int i = 0; i < 40; i++) {
+        snprintf(name, sizeof name, "user.%0120d", i);
+        LT_EQ(SC(T, setxattr, P("/n/c"), P(name), P("v"), 1, 0), 0);
+    }
+    LT_EQ(SC(T, getxattr, P("/n/c"), P(name), P(v), sizeof v), 1);
+    for (int i = 0; i < 40; i++) {
+        snprintf(name, sizeof name, "user.%0120d", i);
+        SC(T, removexattr, P("/n/c"), P(name));
+    }
+    /* a directory descriptor (open for search on the host) reads and misses attributes too */
+    LT_EQ(SC(T, setxattr, P("/n"), P("user.d"), P("dir"), 3, 0), 0);
+    int64_t dfd = gopen("/n", LX_O_RDONLY | LX_O_DIRECTORY, 0);
+    LT_EQ(SC(T, fgetxattr, dfd, P("user.d"), P(v), sizeof v), 3);
+    LT_ERRNO(SC(T, fgetxattr, dfd, P("user.none"), P(v), sizeof v), LX_ENODATA);
+    LT_EQ(SC(T, fremovexattr, dfd, P("user.d")), 0);
+    SC(T, close, dfd);
 }
 
 LT_TEST(statfs_and_sync)
