@@ -1,4 +1,4 @@
-# voile-ldk
+# voile-lkd
 
 The Linux engine of [Voile](https://github.com/Zagrios/voile): it runs x86-64 **Linux** programs, unmodified,
 in native macOS arm64 processes, with no virtual machine and no Hypervisor.framework. SailOver uses it for Windows
@@ -26,7 +26,7 @@ Direct3D client DLLs; Voile builds and ships them.
 ## Building
 
 ```sh
-git clone --recursive https://github.com/Zagrios/voile-ldk.git
+git clone --recursive https://github.com/Zagrios/voile-lkd.git
 brew install cmake ninja
 ./build.sh
 ```

@@ -1,4 +1,4 @@
-voile-ldk includes or derives from the following third-party works. Their licenses apply to those
+voile-lkd includes or derives from the following third-party works. Their licenses apply to those
 parts; everything else is proprietary (see LICENSE).
 
 - lkd/: see lkd/NOTICE and the NOTICE files of its modules (HyperLinux, Apache-2.0; Linux uapi
