@@ -3,6 +3,10 @@
 #include "Host.h"
 
 #include <FEXCore/Utils/SHMStats.h>
+extern "C" {
+#include <lkd/lkd.h>
+#include <lkd/syscall_nr.h>
+}
 
 #include <algorithm>
 #include <atomic>
@@ -10,17 +14,33 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <memory>
+#include <new>
+#include <mach/mach.h>
 #include <mutex>
 #include <pthread.h>
+#include <sys/resource.h>
 #include <sys/time.h>
 #include <unistd.h>
+#include <unordered_map>
 #include <vector>
 
 extern "C" int fexdarwin_lkd_vma_describe(lkd_task* t, uint64_t gva, uint64_t* start, uint64_t* end, uint32_t* prot,
                                           uint64_t* off, char* name, unsigned long name_len);
+extern "C" void fexdarwin_lkd_task_comm(lkd_task* t, char* out, unsigned long len);
 
 namespace HitchLog {
 namespace {
+bool Switch(const char* Name) {
+  const char* E = getenv(Name);
+  return E && *E && strcmp(E, "0") != 0;
+}
+
+bool HitchesEnabled() {
+  static const bool On = Switch("FEXDARWIN_HITCH_LOG");
+  return On;
+}
+
 std::mutex StatsLock;
 std::vector<FEXCore::SHMStats::ThreadStats*> AllStats; // never freed: a thread's counts stay in the sums after it ends
 std::atomic<pid_t> WatcherPid {0};
@@ -102,13 +122,162 @@ void Log(const char* What, const Totals& A, const Totals& B) {
           (B.InvalNs - A.InvalNs) / 1e6, (unsigned long long)((B.InvalBytes - A.InvalBytes) / 1024));
 }
 
+// Profile: system calls per number (count, wall nanoseconds inside LKD).
+std::atomic<uint64_t> SysCount[LKD_NR_TABLE_SIZE], SysNs[LKD_NR_TABLE_SIZE];
+
+uint64_t CpuNs(const struct timeval& Tv) {
+  return static_cast<uint64_t>(Tv.tv_sec) * 1000000000ull + static_cast<uint64_t>(Tv.tv_usec) * 1000ull;
+}
+
+double Ms(uint64_t Ns) {
+  return Ns / 1e6;
+}
+
+class Profile {
+public:
+  Profile() { Sample(true); }
+
+  // Logs the time since the previous call (10 s, or less at exit and exec). Wait: false skips the per-thread rows
+  // when another thread holds the thread list (exit must not hang on it).
+  void Log(const char* Why, bool Wait = true) {
+    struct ThreadRow {
+      int32_t Tid;
+      char Comm[16];
+      uint64_t Cpu, Sys, SysNs, Jit;
+    };
+    struct SysRow {
+      unsigned Nr;
+      uint64_t Count, Ns;
+    };
+    const Snapshot Prev = Last;
+    Sample(Wait);
+    std::vector<ThreadRow> Rows;
+    for (const auto& [Tid, Now] : Last.Threads) {
+      const auto It = Prev.Threads.find(Tid);
+      const ThreadSample Was = It == Prev.Threads.end() ? ThreadSample {} : It->second;
+      ThreadRow R {Tid, {}, Now.Cpu - Was.Cpu, Now.Sys - Was.Sys, Now.SysNs - Was.SysNs, Now.Jit - Was.Jit};
+      memcpy(R.Comm, Now.Comm, sizeof R.Comm);
+      Rows.push_back(R);
+    }
+    std::sort(Rows.begin(), Rows.end(), [](const ThreadRow& A, const ThreadRow& B) { return A.Cpu > B.Cpu; });
+    std::vector<SysRow> Calls;
+    uint64_t AllCalls = 0, AllNs = 0;
+    for (unsigned Nr = 0; Nr < LKD_NR_TABLE_SIZE; ++Nr) {
+      const SysRow R {Nr, Last.SysCount[Nr] - Prev.SysCount[Nr], Last.SysNs[Nr] - Prev.SysNs[Nr]};
+      AllCalls += R.Count;
+      AllNs += R.Ns;
+      if (R.Count) Calls.push_back(R);
+    }
+    std::sort(Calls.begin(), Calls.end(), [](const SysRow& A, const SysRow& B) { return A.Ns > B.Ns; });
+
+    struct tm Lt;
+    const time_t Sec = Last.Wall.tv_sec;
+    localtime_r(&Sec, &Lt);
+    const int Pid = static_cast<int>(getpid());
+    fprintf(stderr,
+            "[fexdarwin] pid %d profile (%s) %.2f s to %02d:%02d:%02d.%03d \"%s\": cpu user %.1f ms sys %.1f ms, syscalls %llu "
+            "(%.1f ms inside), JIT %.1f ms (%llu blocks), SMC faults %llu (%.1f ms), invalidations %llu (%.1f ms)\n",
+            Pid, Why, (Last.Mono - Prev.Mono) / 1e9, Lt.tm_hour, Lt.tm_min, Lt.tm_sec, static_cast<int>(Last.Wall.tv_usec / 1000),
+            Last.MainComm, Ms(Last.User - Prev.User), Ms(Last.Kernel - Prev.Kernel), (unsigned long long)AllCalls, Ms(AllNs),
+            Ms(Last.T.JitNs - Prev.T.JitNs), (unsigned long long)(Last.T.JitCount - Prev.T.JitCount),
+            (unsigned long long)(Last.T.SmcCount - Prev.T.SmcCount), Ms(Last.T.SmcNs - Prev.T.SmcNs),
+            (unsigned long long)(Last.T.InvalCount - Prev.T.InvalCount), Ms(Last.T.InvalNs - Prev.T.InvalNs));
+    for (size_t I = 0; I < Rows.size() && I < 10; ++I) {
+      if (!Rows[I].Cpu && !Rows[I].Sys) break;
+      fprintf(stderr, "[fexdarwin] pid %d   thread %d \"%s\": cpu %.1f ms, syscalls %llu (%.1f ms inside), JIT %.1f ms\n", Pid,
+              Rows[I].Tid, Rows[I].Comm, Ms(Rows[I].Cpu), (unsigned long long)Rows[I].Sys, Ms(Rows[I].SysNs), Ms(Rows[I].Jit));
+    }
+    for (size_t I = 0; I < Calls.size() && I < 12; ++I) {
+      const char* Name = lkd_syscall_name(Calls[I].Nr);
+      fprintf(stderr, "[fexdarwin] pid %d   syscall %s: %llu calls, %.1f ms (%.1f us each)\n", Pid, Name ? Name : "?",
+              (unsigned long long)Calls[I].Count, Ms(Calls[I].Ns), Calls[I].Ns / 1e3 / static_cast<double>(Calls[I].Count));
+    }
+  }
+
+private:
+  struct ThreadSample {
+    char Comm[16];
+    uint64_t Cpu, Sys, SysNs, Jit;
+  };
+  struct Snapshot {
+    uint64_t Mono {}, User {}, Kernel {};
+    struct timeval Wall {};
+    Totals T {};
+    char MainComm[16] {};
+    std::unordered_map<int32_t, ThreadSample> Threads;
+    uint64_t SysCount[LKD_NR_TABLE_SIZE] {}, SysNs[LKD_NR_TABLE_SIZE] {};
+  };
+  Snapshot Last;
+
+  void Sample(bool Wait) {
+    static const uint64_t Hz = CounterHz();
+    Snapshot S;
+    S.Mono = NowNs();
+    gettimeofday(&S.Wall, nullptr);
+    struct rusage Ru;
+    getrusage(RUSAGE_SELF, &Ru);
+    S.User = CpuNs(Ru.ru_utime);
+    S.Kernel = CpuNs(Ru.ru_stime);
+    S.T = Read();
+    for (unsigned Nr = 0; Nr < LKD_NR_TABLE_SIZE; ++Nr) {
+      S.SysCount[Nr] = SysCount[Nr].load(std::memory_order_relaxed);
+      S.SysNs[Nr] = SysNs[Nr].load(std::memory_order_relaxed);
+    }
+    // A thread in the list is alive: EndGuestThread takes it out under the lock before releasing its task.
+    std::unique_lock<std::mutex> Lk(G->ThreadsLock, std::defer_lock);
+    if (Wait) Lk.lock();
+    if (Lk.owns_lock() || Lk.try_lock()) {
+      for (GuestThread* T : G->Threads) {
+        ThreadSample Ts {};
+        fexdarwin_lkd_task_comm(T->Task, Ts.Comm, sizeof Ts.Comm);
+        if (T->Task && lkd_task_tid(T->Task) == lkd_task_pid(T->Task)) memcpy(S.MainComm, Ts.Comm, sizeof Ts.Comm);
+        if (T->PThread) {
+          thread_basic_info_data_t Info;
+          mach_msg_type_number_t Count = THREAD_BASIC_INFO_COUNT;
+          const mach_port_t Port = pthread_mach_thread_np(T->PThread);
+          if (thread_info(Port, THREAD_BASIC_INFO, reinterpret_cast<thread_info_t>(&Info), &Count) == KERN_SUCCESS)
+            Ts.Cpu = static_cast<uint64_t>(Info.user_time.seconds + Info.system_time.seconds) * 1000000000ull +
+                     static_cast<uint64_t>(Info.user_time.microseconds + Info.system_time.microseconds) * 1000ull;
+        }
+        Ts.Sys = T->SysCount.load(std::memory_order_relaxed);
+        Ts.SysNs = T->SysNs.load(std::memory_order_relaxed);
+        if (auto* St = T->State ? T->State->ThreadStats : nullptr; St && Hz)
+          Ts.Jit = static_cast<uint64_t>(static_cast<double>(std::atomic_ref<uint64_t>(St->AccumulatedJITTime).load(std::memory_order_relaxed)) *
+                                         1e9 / static_cast<double>(Hz));
+        S.Threads[T->Tid] = Ts;
+      }
+    }
+    if (!S.MainComm[0]) memcpy(S.MainComm, Last.MainComm, sizeof S.MainComm); // at exit the list is empty
+    Last = std::move(S);
+  }
+};
+
+// The profile of this process (ProfPid): a forked child inherits its parent's and replaces it in its own watcher.
+std::mutex ProfLock;
+Profile* Prof;
+pid_t ProfPid;
+
 void* Watch(void*) {
   pthread_setname_np("fexdarwin-hitch-log");
   constexpr uint64_t Threshold = 8000000;
+  const bool Hitches = HitchesEnabled();
+  if (ProfileEnabled()) {
+    std::lock_guard<std::mutex> Lk(ProfLock);
+    Prof = new Profile(); // never freed: the exit log may still use it
+    ProfPid = getpid();
+  }
   Totals Prev = Read(), Summary = Prev;
   for (unsigned Tick = 1;; ++Tick) {
     usleep(50000);
     const Totals Now = Read();
+    if (Tick % 200 == 0 && ProfileEnabled()) {
+      std::lock_guard<std::mutex> Lk(ProfLock);
+      Prof->Log("10 s");
+    }
+    if (!Hitches) {
+      Prev = Now;
+      continue;
+    }
     if (Now.JitNs - Prev.JitNs > Threshold || Now.SmcNs - Prev.SmcNs > Threshold || Now.InvalNs - Prev.InvalNs > Threshold) {
       Log("50 ms window", Prev, Now);
     }
@@ -123,13 +292,23 @@ void* Watch(void*) {
   }
   return nullptr;
 }
+// Threads do not survive fork: a forked process starts its own watcher (AfterFork, or its first new thread).
+void StartWatcher() {
+  const pid_t Me = getpid();
+  pid_t Was = WatcherPid.load();
+  if (Was != Me && WatcherPid.compare_exchange_strong(Was, Me)) {
+    pthread_t W;
+    if (pthread_create(&W, nullptr, Watch, nullptr) == 0) pthread_detach(W);
+  }
+}
 } // namespace
 
 bool Enabled() {
-  static const bool On = [] {
-    const char* E = getenv("FEXDARWIN_HITCH_LOG");
-    return E && *E && strcmp(E, "0") != 0;
-  }();
+  return HitchesEnabled() || ProfileEnabled();
+}
+
+bool ProfileEnabled() {
+  static const bool On = Switch("FEXDARWIN_PROFILE");
   return On;
 }
 
@@ -151,13 +330,21 @@ void Attach(FEXCore::Core::InternalThreadState* Thread) {
     AllStats.push_back(S);
   }
   Thread->ThreadStats = S;
-  // Threads do not survive fork: a forked process starts its own watcher with its first new thread.
-  const pid_t Me = getpid();
-  pid_t Was = WatcherPid.load();
-  if (Was != Me && WatcherPid.compare_exchange_strong(Was, Me)) {
-    pthread_t W;
-    if (pthread_create(&W, nullptr, Watch, nullptr) == 0) pthread_detach(W);
-  }
+  StartWatcher();
+}
+
+void AfterFork() {
+  if (!Enabled()) return;
+  // The parent's lock state and profile do not belong to this process.
+  new (&ProfLock) std::mutex();
+  Prof = nullptr;
+  StartWatcher();
+}
+
+void LogProfileNow(const char* Why) {
+  if (!ProfileEnabled()) return;
+  std::unique_lock<std::mutex> Lk(ProfLock, std::try_to_lock);
+  if (Lk.owns_lock() && Prof && ProfPid == getpid()) Prof->Log(Why, false);
 }
 
 void NoteSmcPage(uint64_t GuestAddress) {
@@ -172,6 +359,12 @@ void NoteSmcPage(uint64_t GuestAddress) {
       return;
     }
   }
+}
+
+void NoteSyscall(uint64_t Nr, uint64_t Ns) {
+  if (Nr >= LKD_NR_TABLE_SIZE) return;
+  SysCount[Nr].fetch_add(1, std::memory_order_relaxed);
+  SysNs[Nr].fetch_add(Ns, std::memory_order_relaxed);
 }
 
 void Add(Kind K, uint64_t Ns, uint64_t Bytes) {

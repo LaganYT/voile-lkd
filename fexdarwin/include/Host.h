@@ -49,6 +49,7 @@ struct GuestThread {
   std::atomic<bool> KickRequested {false};
   std::atomic<bool> InLkd {false};         // inside lkd_syscall/lkd_signal_next: LKD checks pending signals on its way out
   uint64_t FaultErr {}, FaultTrapNo {}, FaultAddr {}; // sigcontext err/trapno/cr2 of the pending synchronous fault
+  std::atomic<uint64_t> SysCount {0}, SysNs {0};      // profile (FEXDARWIN_PROFILE): system calls of this thread
 };
 
 // The guest thread attached to the calling host thread (null on host-only threads).

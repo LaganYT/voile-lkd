@@ -39,6 +39,13 @@ int fexdarwin_lkd_vma_describe(lkd_task* t, uint64_t gva, uint64_t* start, uint6
   return 0;
 }
 
+// comm of task t (profile): the owner may rename it meanwhile, so the copy is only as exact as a log needs.
+void fexdarwin_lkd_task_comm(lkd_task* t, char* out, unsigned long len) {
+  unsigned long i = 0;
+  for (; t && i + 1 < len && i < LKD_COMM_LEN && t->comm[i]; i++) out[i] = t->comm[i];
+  if (len) out[i] = 0;
+}
+
 // fs module (src/lkd/src/fs/lkd_fs.h): the host stdin, stdout and stderr become guest fds 0, 1, 2 of the first task.
 int lkd_fs_install_stdio(lkd_task* t);
 int fexdarwin_lkd_install_stdio(lkd_task* t) {

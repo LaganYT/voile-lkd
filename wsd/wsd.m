@@ -75,7 +75,7 @@ static NSString *const kShader =
 @implementation WsdBuffer
 @end
 
-/* Input latency probe (test only, WSD_LATENCY_PROBE=1): a DEBUG_INPUT arms it; every overlay frame received after that
+/* Input latency probe (test only, WSD_LATENCY_PROBE=1 or the first DEBUG_INPUT): a DEBUG_INPUT arms it; every overlay frame received after that
  * is compared on a coarse luminance grid with the frame received just before the input. The first frame whose
  * difference rises clearly above the frame-to-frame noise is the game's visible reaction. Times use now_ns(), which is
  * also the guest CLOCK_MONOTONIC under LKD, so submit times from nptunix are on the same clock. */
@@ -1231,7 +1231,12 @@ static CAMetalLayer *make_metal_layer(void) {
       break;
     }
     NSTimeInterval t = NSProcessInfo.processInfo.systemUptime;
-    if (m->kind != 3 && (m->kind == 2 || m->b)) probe_arm(m->kind == 1 ? "key" : "click");
+    /* the first test input turns the probe on when WSD_LATENCY_PROBE was not set (the launcher passes a fixed
+     * environment); it arms nothing itself: the probe needs earlier frames for its base and noise */
+    if (!g_probe_enabled) {
+      g_probe_enabled = YES;
+      LOG("latency probe on (first test input)");
+    } else if (m->kind != 3 && (m->kind == 2 || m->b)) probe_arm(m->kind == 1 ? "key" : "click");
     g_injecting = YES;
     if (m->kind == 3) {
       /* raw mouse motion (relative mode test): delta x = a - 10000, delta y = b - 10000, through the view as a real

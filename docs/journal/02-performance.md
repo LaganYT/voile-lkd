@@ -1,0 +1,251 @@
+# Performances du moteur Linux et couches à simplifier, 3 octobre 2026
+
+Ce document mesure où passe le temps dans une image, dans la latence d'entrée et au démarrage de Rocket League sur le
+moteur Linux. Il chiffre ensuite chaque couche de traduction qu'on pourrait retirer ou simplifier. C'est une analyse :
+rien n'est décidé, et les correctifs proposés en fin de document ne sont pas écrits.
+
+Machine : Apple M5 Max, macOS 27.0.1, écran jusqu'à 240 Hz. Runtime Voile `v26.3.0-8` (SailOver `a853ad2`), avec
+`fexdarwin-run` et wsd remplacés par les versions instrumentées décrites plus bas. Le jeu est limité à 60 i/s.
+
+## Résumé
+
+- **À 60 i/s, aucune pièce n'est saturée.** En Free Play, le fil qui présente les images attend 15,5 ms sur 16,7 ms.
+  Le GPU est occupé à 27 %. Le serveur de rendu utilise 39 % d'un cœur. Le jeu lui-même en utilise 88 %, dont une
+  bonne part en attente active.
+- **Le jeu fait 660 000 appels système par seconde en Free Play** (480 000 au menu). Plus de la moitié viennent
+  d'une attente active (`SwitchToThread`), que Wine traduit en `getrusage` + `sched_yield` + `getrusage`. Viennent
+  ensuite environ 26 000 requêtes par seconde à wineserver, à environ 11 µs l'aller-retour.
+- **Un appel à wineserver coûte 150 à 280 fois plus cher qu'avec le Wine macOS de Voile.** Ce n'est pas FEX : sans
+  ntsync, chaque attente et chaque `SetEvent` font un aller-retour avec wineserver. Pour le calcul pur, memcpy et la
+  lecture de fichiers, le moteur va aussi vite que Rosetta.
+- **Le démarrage (31,6 s mesurés, 27,7 s sans profil) ne dépend pas du JIT.** La compilation FEX prend moins de
+  0,1 s sur tout le lancement : un cache de code sur disque ne gagnerait presque rien. `InitOnlineSubsystem`
+  (14,8 s) sature le fil principal avec une avalanche d'appels sur les fichiers. Wine relit tout un dossier à chaque
+  fichier introuvable, parce que LKD ne dit pas que le volume est insensible à la casse. Un fichier introuvable coûte
+  10,5 ms dans un dossier de 20 000 fichiers, contre 17 µs sous le Wine macOS.
+- **Latence d'entrée.** Au menu, 58 ms jusqu'à l'envoi de l'image qui réagit (médiane). En Free Play, 33 ms. Il faut
+  ajouter 15,6 ms jusqu'à l'affichage, alors que l'écran se rafraîchit toutes les 4,2 à 8,3 ms. Le pilote, lui,
+  transmet une touche en 0,05 ms.
+- **Ordre proposé** (détails à la fin) :
+  1. dire à Wine que les dossiers sont insensibles à la casse (gros gain au démarrage, petit chantier) ;
+  2. vérifier l'anomalie d'epoll de wineserver (jusqu'à un cœur de temps système) ;
+  3. alléger `NtYieldExecution` ;
+  4. compter les requêtes de wineserver par type, puis décider de ntsync dans LKD ;
+  5. raccourcir le chemin de présentation de wsd.
+
+  D3D11 dans le même processus, un wineserver natif, les parties Unix natives et le cache de code FEX ne se justifient
+  pas d'après ces mesures.
+
+## Outils de mesure (ajoutés pour ce rapport)
+
+- **`FEXDARWIN_PROFILE=1`** (fexdarwin, `HitchLog.cpp`). Toutes les 10 s, ainsi qu'à la fin d'un processus et à un
+  `exec`, chaque processus invité écrit :
+  - son CPU utilisateur et système ;
+  - ses appels système : nombre, et temps passé dans LKD (ce temps inclut les attentes bloquantes) ;
+  - le temps de JIT de FEX, les fautes SMC et les invalidations ;
+  - pour chaque thread, le CPU, nommé d'après le `comm` invité (les noms Windows des threads, par exemple
+    `RenderingThread`) ;
+  - les 12 appels système qui ont pris le plus de temps.
+
+  Coût : deux lectures d'horloge par appel système. Avec le profil, le démarrage est passé de 27,7 à 31,6 s.
+- **`tools/dev/engine-top.c`**. Il donne le CPU de chaque thread de wsd, de `virgl_render_server` et des
+  `fexdarwin-run`, ainsi que l'occupation du GPU (`Device Utilization %` de l'IOAccelerator). Il lit ces chiffres par
+  `proc_pidinfo` et IOKit, sans suspendre de thread, à la différence de `sample`.
+- **Sonde de latence de wsd.** La première entrée de test (`wsdctl tap`) l'active maintenant, alors qu'il fallait
+  avant `WSD_LATENCY_PROBE` dans l'environnement de wsd, que le lanceur de SailOver ne transmet pas.
+- **`tests/bench/winbench.c`**. Coût par appel des traversées d'un jeu Windows : horloge, `SwitchToThread`, attente et
+  signal d'événement, création d'objet, section critique, lecture de fichier, aller-retour entre deux threads, calcul,
+  memcpy. `winbench N TEST` lance un seul test, pour que le profil ne voie que ses appels.
+- **`tests/bench/missbench.c`**. Coût d'un `GetFileAttributesW` sur un fichier absent, et sur un fichier présent mais
+  écrit avec une autre casse.
+
+Session mesurée : lancement depuis SailOver, puis menu (20 flèches haut/bas envoyées par `wsdctl`), puis Free Play
+(environ 60 s de jeu, puis 8 bascules de caméra balle par la touche Espace), retour au menu et sortie par le menu.
+Aucune partie en ligne. Journaux : dossier `session1` de l'espace de travail de la session (non versionné).
+
+## Une image (60 i/s, budget de 16,7 ms)
+
+| Pièce | Free Play | Menu | Remarque |
+|---|---|---|---|
+| Jeu, `RenderingThread` | 45 % d'un cœur (7,5 ms par image) | 21 % | 314 000 appels système/s en Free Play |
+| Jeu, fil principal | 30 % (5,1 ms) | 21 % | 318 000 appels système/s |
+| Jeu, autres fils | 13 % (2,2 ms) | 8 % | |
+| wineserver | 12 % (1,9 ms) | 28 % (anomalie, voir plus bas) | 94 000 appels système/s en Free Play |
+| Serveur de rendu, décodeur Neptune (`npt-ring-1`) | 25 % (4,2 ms) | 13 % | appels DXMT inclus |
+| Serveur de rendu, `dxmt-encode-thread` | 6 % (1,0 ms) | 4 % | |
+| Serveur de rendu, autres fils | 8 % (1,3 ms) | 5 % | |
+| wsd | environ 3 % | 3 % | |
+| GPU | 27 % | 26 % | occupation moyenne |
+| Attente de la fence avant présentation | 0,5 ms (médiane) | | `fence wait` de nptunix |
+| Attente de cadence (`NPT_WSD_PACING=after`) | 13 à 16,5 ms | 15 à 16 ms | marge inutilisée |
+
+Le temps des fils du jeu comprend l'attente active. Le jeu fait environ 118 000 `SwitchToThread` par seconde en
+Free Play, soit environ 2 000 par image. Chacun coûte trois appels système, environ 1,6 µs au total : l'attente active
+prend donc environ 0,2 cœur, soit 3 ms de CPU par image sur les deux fils principaux.
+
+Les appels système du jeu en Free Play, par seconde :
+
+| Appel | Nombre/s | Origine |
+|---|---|---|
+| `getrusage` | 237 000 | `NtYieldExecution` de Wine (deux par `SwitchToThread`) |
+| `clock_gettime` | 142 000 | `QueryPerformanceCounter` (150 ns l'appel en tout) |
+| `sched_yield` | 118 000 | `NtYieldExecution` |
+| `rt_sigprocmask` | 77 000 | deux par requête à wineserver |
+| `read` | 42 000 | réponses de wineserver, socket wsd, etc. |
+| `write` + `writev` | 39 000 | requêtes à wineserver, présentations, son |
+| `futex` | 1 500 | |
+
+wineserver lit environ 26 000 requêtes par seconde en Free Play (7 700 au menu), dont presque toutes viennent du jeu.
+Avec environ 11 µs de latence par appel, cela fait jusqu'à 0,3 s de fil bloqué par seconde, réparties entre les fils
+du jeu. Le type de ces requêtes n'est pas encore mesuré (voir « Mesures suivantes »).
+
+La cadence tient : sur 14 820 présentations, l'intervalle est de 16,6 à 16,7 ms. Il y a eu 23 images tenues plus de
+50 ms (surtout aux chargements), et 17 « frame back » en environ 4 minutes.
+
+## Latence d'entrée
+
+Méthode. `wsdctl tap` envoie une touche à wsd, qui la date. La sonde compare ensuite chaque image reçue à celle
+d'avant l'entrée, et date la première qui change nettement. Le pilote `winesailover.drv` date de son côté la lecture
+de l'évènement et son envoi à Wine (`WINE_SAILOVER_LATENCY=1`).
+
+| Étape | Menu | Free Play |
+|---|---|---|
+| wsd → lecture par le pilote → envoi à Wine | 0,05 ms | 0,05 ms (90e centile 3,5 ms) |
+| Entrée → soumission de l'image qui réagit (jeu, rendu, GPU, fence) | 58 ms en médiane (de 21 à 101 ms, 20 essais) | 33 ms en médiane (de 27 à 48 ms, 8 essais) |
+| Soumission → affichage (`presentedTime`) | 15,6 ms (médiane) | 15,6 ms |
+| **Total** | **environ 73 ms** | **environ 49 ms** |
+
+Les chiffres du menu sont moins sûrs : le surlignage du menu s'anime en fondu, et la sonde le détecte un peu tard. En
+Free Play, la bascule de caméra change toute l'image, ce qui donne une mesure nette.
+
+Pour les vraies touches du joueur, 3,1 ms en médiane séparent l'heure de l'évènement macOS (le matériel) de sa
+lecture par le pilote. C'est le trajet de macOS jusqu'à l'application, avant wsd.
+
+De l'entrée à la soumission, il faut environ deux images en Free Play : le fil de jeu lit l'entrée, puis le fil de
+rendu dessine une image plus tard. Ce délai est celui du moteur du jeu, pas celui de notre chaîne.
+
+La soumission → affichage, en revanche, est à nous. Une image attend :
+- le prochain tick du display link de wsd ;
+- le dessin dans le drawable ;
+- puis le compositeur de macOS, puisque la fenêtre est en mode fenêtré.
+
+Au total, cela fait 15,6 ms, alors que les intervalles affichés tombent sur des multiples de 4,17 ms. On peut sans
+doute gagner 4 à 10 ms ici, à mesurer plus finement (voir la couche « Présentation »).
+
+## Démarrage
+
+| Étape (`Launch.log`) | Sans profil (17:22) | Avec profil (20:49) | Ce qui se passe (profil) |
+|---|---|---|---|
+| `PreInit` | 2,3 s | 2,6 s | |
+| `LoadScriptPackages` | 9,9 s | 10,5 s | le fil principal tourne en attente active ; deux autres fils chargent, sans saturer |
+| `InitOnlineSubsystem` | 12,4 s | 14,8 s | le fil principal sature un cœur sur les appels de fichiers |
+| Autres étapes | 3,1 s | 3,7 s | |
+| **Total** | **27,7 s** | **31,6 s** | |
+
+Détail du profil, par tranche de 10 s, pour le processus du jeu :
+- **De 0 à 10 s.** Le fil principal prend 8,7 s de CPU pour 6,5 millions d'appels système : 4,2 millions de
+  `getrusage` et 2,1 millions de `sched_yield`. C'est l'attente active d'un chargement qui tourne sur d'autres fils :
+  le fil 117 prend 3,6 s de CPU, et `AsyncIOSystem` 1,7 s avec 957 000 appels système. Ce qui borne cette phase n'est
+  pas établi, puisqu'aucun fil n'y est saturé (voir « Mesures suivantes »).
+- **De 10 à 30 s.** Le fil principal prend 8,3 puis 10,2 s de CPU, dont plus de la moitié en temps système. Sur les
+  20 s, il fait :
+  - 592 000 `newfstatat` ;
+  - 304 000 `openat` ;
+  - 304 000 `getdents64` ;
+  - 255 000 `getxattr` ;
+  - 240 000 `close` ;
+  - 120 000 `fstat` ;
+  - 75 000 `fstatfs`.
+
+  C'est la recherche insensible à la casse de Wine sous Linux (`lookup_unix_name`, `dlls/ntdll/unix/file.c`). Quand
+  un nom n'existe pas tel quel, Wine appelle `get_dir_case_sensitivity` : il ouvre le dossier et demande
+  `EXT2_IOC_GETFLAGS`. Si le drapeau `EXT4_CASEFOLD_FL` n'est pas là, il relit tout le dossier. LKD ne connaît pas cet
+  ioctl, alors que le volume APFS de l'hôte est réellement insensible à la casse.
+- **Le JIT de FEX** a pris 27, 14 puis 5 ms sur ces trois tranches, soit moins de 0,1 s sur tout le démarrage. Un
+  échantillonnage de wineboot (hors jeu) confirme : les fonctions de compilation de FEX y sont presque absentes, et les
+  fils attendent dans le noyau ou dans des appels de fichiers.
+
+Coût d'une recherche de fichier (`missbench`, 200 à 2 000 appels de `GetFileAttributesW`) :
+
+| Cas | Moteur Linux | Wine macOS de Voile |
+|---|---|---|
+| Fichier absent, dossier de 20 fichiers | 139 µs | 17 µs |
+| Fichier absent, dossier de 20 000 fichiers | 10 518 µs | 17 µs |
+| Fichier présent, autre casse | 50 µs | 9 µs |
+
+## Coûts unitaires (`winbench`)
+
+Même programme sur le moteur Linux et sous le Wine macOS de Voile (x86-64 sous Rosetta), dans un préfixe de test.
+
+| Appel | Moteur Linux | Wine macOS, msync (réglage de SailOver) | Wine macOS sans msync |
+|---|---|---|---|
+| `QueryPerformanceCounter` | 150 ns | 48 ns | 48 ns |
+| `SwitchToThread` | 1 256 ns | 226 ns | 230 ns |
+| `WaitForSingleObject(ev, 0)` | 11 839 ns | 66 ns | 8 423 ns |
+| `SetEvent` | 10 681 ns | 39 ns | 7 928 ns |
+| `CreateEvent` + `CloseHandle` | 20 946 ns | 18 862 ns | 17 156 ns |
+| Section critique, sans contention | 3,7 ns | 3,4 ns | 3,3 ns |
+| `SetFilePointer` + `ReadFile` de 4 Kio | 957 ns | 1 027 ns | 1 013 ns |
+| Aller-retour d'évènement entre deux fils | 34 715 ns | 5 851 ns | 19 650 ns |
+| Boucle de calcul (par itération) | 1,2 ns | 1,2 ns | 1,2 ns |
+| memcpy de 1 Mio | 16,3 µs | 18,5 µs | 18,5 µs |
+
+Une requête à wineserver se décompose ainsi d'après le profil :
+- côté client, quatre appels système : `rt_sigprocmask` deux fois, `write` de la requête, `read` de la réponse ;
+- côté serveur, environ cinq : `epoll_pwait2`, `read`, `write`, `gettimeofday`, `clock_gettime` ;
+- au total, environ 16 µs de CPU répartis entre les deux processus.
+
+Un appel système LKD de base coûte environ 0,15 µs (`clock_gettime`). Les appels qui touchent le noyau Darwin coûtent
+1 à 2 µs (`write` sur un tube, `sched_yield`).
+
+## Les couches, une par une
+
+| Couche | Ce qu'elle coûte (mesuré) | Pour la retirer ou la simplifier | Risque | Gain attendu |
+|---|---|---|---|---|
+| **Recherche insensible à la casse (Wine sous Linux sur APFS)** | Fil principal saturé pendant `InitOnlineSubsystem` (environ 1,9 million d'appels de fichiers en 20 s). 10,5 ms par fichier absent dans un grand dossier. | LKD répond à `FS_IOC_GETFLAGS` (`EXT2_IOC_GETFLAGS`) sur un dossier avec `EXT4_CASEFOLD_FL` quand le volume hôte est insensible à la casse (`pathconf(_PC_CASE_SENSITIVE)`). Pas de changement de Wine. | Faible : c'est une description exacte du volume. Un volume APFS sensible à la casse continue de répondre « sensible ». | Estimé de −8 à −12 s au démarrage, plus les chargements et les accès aux fichiers en jeu. À confirmer par un essai. |
+| **Attente active `NtYieldExecution`** | 118 000 yields/s en Free Play, chacun = 3 appels système (environ 1,6 µs), soit environ 0,2 cœur. Au démarrage, le fil principal y passe 8,7 s de CPU sur les 10 premières secondes. `thread_rusage` de LKD renvoie toujours 0 changement de contexte, donc `SwitchToThread` répond toujours FALSE (« pas de yield »). | Sous LKD : un `NtYieldExecution` sans `getrusage` dans voile-wine, ou bien un `getrusage(RUSAGE_THREAD)` qui renvoie un vrai compteur. Rendre `sched_yield` de LKD aussi bon marché que celui de Darwin (1,26 µs contre 0,23 µs). | Faible, mais la valeur de retour de `SwitchToThread` change le comportement des boucles d'attente du jeu. À vérifier. | De −2 à −3 appels système par yield. Environ 0,1 à 0,2 cœur en jeu ; moins de chauffe sur un portable. Peu d'effet sur la cadence, puisque ce temps est de l'attente. |
+| **wineserver : temps système dans `epoll_pwait2`** | Par tranches de 10 s au menu, wineserver prend jusqu'à 10,5 s de CPU (8 s en système), pour le même nombre d'appels que dans les tranches calmes (0,9 s). Ce temps est caché dans `epoll_pwait2`. | Compter les tours de la boucle `do_wait` de `lkd/src/net/epoll.c` (kqueue lisible alors que `ep_collect` ne rend rien). Corriger si c'est bien une boucle de réveil. | Faible | Jusqu'à un cœur au menu. Peut-être aussi de la latence de wineserver. |
+| **ntsync dans LKD (`/dev/ntsync`)** | Attente ou signal = environ 11 µs et un aller-retour avec wineserver. Aller-retour entre deux fils : 35 µs (contre 5,9 µs avec msync sous macOS). Environ 26 000 requêtes/s en Free Play, de types inconnus. | Un périphérique `/dev/ntsync` dans LKD. Wine et wineserver sont déjà compilés avec ntsync (`HAVE_LINUX_NTSYNC_H`). Les objets doivent être partagés entre processus hôtes : état en mémoire partagée, fds passés par SCM_RIGHTS, WAIT_ALL atomique par instance du périphérique, attentes interruptibles par les signaux LKD. | Moyen. Le point délicat est le multiprocessus, et il ne doit rien changer à ce que voit EAC. | Si la plupart des requêtes sont des waits, des sets et des resets : environ 10 µs par appel. Jusqu'à 0,2 à 0,3 s de fil bloqué par seconde en moins, et une partie des 12 à 28 % de CPU de wineserver. À décider après le comptage des requêtes. |
+| **Présentation (wsd)** | 15,6 ms entre soumission et affichage, sur un écran de 120/240 Hz. | D'abord dater chaque étape dans wsd : tick du display link, encodage, `presentedTime`. Pistes : présenter dès la fin de la fence sans attendre le tick, n'utiliser que 2 drawables, et vérifier si le plein écran natif (sans compositeur) est possible pour une fenêtre plein écran. | Faible à moyen (cadence, image en arrière) | Estimé de 4 à 10 ms de latence. |
+| **D3D11 dans le même processus (thunk FEX vers DXMT)** | Le serveur de rendu prend 6,5 ms de CPU par image (décodage et appels DXMT). Ce coût serait déplacé, pas supprimé. Le passage entre processus coûte surtout l'attente de fence (0,5 ms en médiane) et les réveils de l'anneau. | `SetThunkHandler` et des stubs `0F 3F` dans fexdarwin (aucun gestionnaire n'est installé aujourd'hui : un `0F 3F` planterait le JIT). Il faudrait aussi charger le décodeur Neptune, DXMT et Metal dans chaque `fexdarwin-run`, et les rendre sûrs vis-à-vis des forks. La version la moins chère garde l'anneau Neptune et remplace seulement le transport vtest. | Élevé : Metal dans un processus qui fait des forks hôtes, plantage commun avec le jeu, et 813 commandes générées dont le générateur n'est pas versionné. | Faible à 60 i/s : moins d'une milliseconde de latence par image. Utile seulement si un jour le serveur de rendu sature (cadence au-delà de 60 i/s). |
+| **Parties Unix natives (`nptunix`, `winesailover`) par thunk** | Non isolé dans le profil, mais petit. Le pilote transmet une touche en 0,05 ms. Les tempêtes SMC de `nptunix` sont réglées depuis le relinkage en pages de 16 Kio. | Les mêmes thunks que ci-dessus. | Moyen | Faible. |
+| **wineserver natif arm64** | 12 % d'un cœur en Free Play, 28 % au menu (anomalie comprise), soit environ 5 µs de serveur par requête. | Porter wineserver sur Darwin en gardant la sémantique des fds et de la mémoire partagée de LKD vue par les invités. Gros chantier. | Élevé | Faible une fois ntsync en place, qui supprime la plupart des requêtes. Ne se justifie pas. |
+| **Cache de code FEX sur disque** | JIT de moins de 0,1 s sur tout un démarrage, et environ 0,5 ms/s en jeu. | Le `DiskCache` de FEX existe, désactivé par défaut. Pour Darwin, il lit la mémoire invitée sans `G2H` (`DiskCache.cpp:566-578`, `Core.cpp:1029`). | Moyen | Presque nul. À abandonner. |
+| **Assertions de FEXCore** (`-DENABLE_ASSERTIONS=ON` dans `fexdarwin/scripts/build.sh`) | Le passage `IRValidation` tourne à chaque compilation. Le JIT est négligeable, donc le coût aussi. | `OFF` en Release. | Faible, mais on perd des contrôles. | Négligeable. |
+| **D3DMetal à la place de DXMT** | Déjà écarté : x86-64 seulement, code fermé, pont depuis l'invité nécessaire (`graphics-display-audio.md` §1.1, §1.4). | | | |
+
+## Ordre proposé
+
+1. **Indiquer la casse à Wine** (LKD, `FS_IOC_GETFLAGS`). Petit, sans risque, et c'est le seul gain chiffré en
+   secondes. On mesure avant et après avec `Launch.log` (`Startup_*`) et `missbench`.
+2. **Vérifier l'anomalie d'epoll de wineserver** : un compteur dans `do_wait`, puis un correctif s'il s'agit d'une
+   boucle de réveil.
+3. **Alléger `NtYieldExecution` sous LKD**, en vérifiant ce que change la valeur de retour de `SwitchToThread`.
+4. **Compter les requêtes de wineserver par type** (compteur par code de requête dans le wineserver de voile-wine,
+   affiché toutes les 10 s), puis décider de ntsync dans LKD.
+5. **Dater le chemin de présentation de wsd**, puis le raccourcir.
+
+Les thunks, le wineserver natif et le cache de code ne se justifient pas avec ces mesures. On les réexaminera si le
+jeu dépasse 60 i/s et que le serveur de rendu devient la limite.
+
+## Mesures suivantes
+
+- **Appels système par thread et par type.** Le profil donne les totaux par thread et les types par processus, mais
+  pas les deux ensemble. C'est nécessaire pour savoir quel fil fait les requêtes à wineserver et ce qui borne
+  `LoadScriptPackages`.
+- **Requêtes de wineserver par type** (point 4 ci-dessus).
+- **Temps d'image sans limite** (`NPT_WSD_PACING=off`, limite d'i/s du jeu au maximum), pour connaître la vraie marge
+  et la pièce qui sature en premier.
+- **Chemin de présentation de wsd**, étape par étape.
+
+## Reproduire
+
+- Profil : `FEXDARWIN_PROFILE=1` (et `FEXDARWIN_HITCH_LOG=1`, au choix) dans `engine/fexdarwin.env` ; ajouter
+  `guest WINE_SAILOVER_LATENCY=1` pour les heures du pilote. Les lignes vont dans `~/Library/Logs/SailOver/Epic/wine-<jeu>.log`.
+- Fils natifs et GPU : `clang -O2 -o engine-top tools/dev/engine-top.c -framework IOKit -framework CoreFoundation`,
+  puis `engine-top 5`.
+- Latence : au menu, `wsdctl $TMPDIR/sailover-engine-<pid>/wsd.sock tap 56` (Maj, active la sonde), puis
+  `tap 125`/`tap 126`. En Free Play, `tap 49` (caméra balle). Lignes `wsd: probe:` dans le journal.
+- Bancs d'essai : compiler avec `x86_64-w64-mingw32-clang -O2` (llvm-mingw de Voile). Les lancer par
+  `crates/game-runtime/src/linux_engine/launch.sh` de SailOver, sous `run-with-timeout.sh`, puis vérifier
+  `pgrep -x fexdarwin-run`.

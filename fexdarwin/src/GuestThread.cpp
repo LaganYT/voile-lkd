@@ -85,6 +85,7 @@ void RunGuestThread(GuestThread* T) {
 }
 
 [[noreturn]] void ExitProcess(int Code) {
+  HitchLog::LogProfileNow("exit");
   // Diagnostics: FEXDARWIN_EXIT_PAUSE=<seconds> keeps the host process alive before it ends, so its address space can be
   // inspected with vmmap. The supervisor watchdog still ends it if the run is torn down.
   if (const char* P = getenv("FEXDARWIN_EXIT_PAUSE"); P && *P) sleep(static_cast<unsigned>(atoi(P)));

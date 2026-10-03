@@ -531,6 +531,7 @@ int FrameRestore(lkd_task* t, uint64_t* SavedMask, struct lx_stack_t* SavedStack
 // execve after the point of no return: LKD has already torn down the address space and the other threads. Load the new
 // image in this host process and give the thread the register state of a fresh Linux process.
 int ExecImage(lkd_task* t, const struct lkd_exec_image* Img) {
+  HitchLog::LogProfileNow("exec");
   auto* T = GT(t);
   auto* Th = T->State;
   // Nothing translated from the old image may run again.
@@ -589,6 +590,7 @@ void ForkChild(lkd_task* t) {
   }
   StartKickRetryThread();
   StartSupervisorWatch(); // threads do not survive a host fork
+  HitchLog::AfterFork();
 }
 
 const lkd_engine_ops Ops = {
@@ -664,7 +666,14 @@ void LkdHandleSyscall(GuestThread* T, FEXCore::Core::CpuStateFrame* Frame) {
   // Linux reports RIP after the syscall instruction while the call runs (ptrace, signal frames).
   St.rip += 2;
   int64_t Rax = 0;
+  const uint64_t T0 = HitchLog::ProfileEnabled() ? HitchLog::NowNs() : 0;
   const lkd_disp D = lkd_syscall(T->Task, &Rq, &Rax);
+  if (T0) {
+    const uint64_t Ns = HitchLog::NowNs() - T0;
+    T->SysCount.fetch_add(1, std::memory_order_relaxed);
+    T->SysNs.fetch_add(Ns, std::memory_order_relaxed);
+    HitchLog::NoteSyscall(Rq.nr, Ns);
+  }
   switch (D) {
   case LKD_RETURN: St.gregs[X::REG_RAX] = static_cast<uint64_t>(Rax); break;
   case LKD_CONTEXT_REPLACED: break;
