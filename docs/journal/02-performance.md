@@ -202,7 +202,7 @@ Un appel système LKD de base coûte environ 0,15 µs (`clock_gettime`). Les app
 
 | Couche | Ce qu'elle coûte (mesuré) | Pour la retirer ou la simplifier | Risque | Gain attendu |
 |---|---|---|---|---|
-| **Recherche insensible à la casse (Wine sous Linux sur APFS)** | Fil principal saturé pendant `InitOnlineSubsystem` (environ 1,9 million d'appels de fichiers en 20 s). 10,5 ms par fichier absent dans un grand dossier. | LKD répond à `FS_IOC_GETFLAGS` (`EXT2_IOC_GETFLAGS`) sur un dossier avec `EXT4_CASEFOLD_FL` quand le volume hôte est insensible à la casse (`pathconf(_PC_CASE_SENSITIVE)`). Pas de changement de Wine. | Faible : c'est une description exacte du volume. Un volume APFS sensible à la casse continue de répondre « sensible ». | Estimé de −8 à −12 s au démarrage, plus les chargements et les accès aux fichiers en jeu. À confirmer par un essai. |
+| **Recherche insensible à la casse (Wine sous Linux sur APFS)** | Fil principal saturé pendant `InitOnlineSubsystem` (environ 1,9 million d'appels de fichiers en 20 s). 10,5 ms par fichier absent dans un grand dossier. | LKD répond à `FS_IOC_GETFLAGS` (`EXT2_IOC_GETFLAGS`) sur un dossier avec `EXT4_CASEFOLD_FL` quand le volume hôte est insensible à la casse (`pathconf(_PC_CASE_SENSITIVE)`). Pas de changement de Wine. | Faible : c'est une description exacte du volume. Un volume APFS sensible à la casse continue de répondre « sensible ». | Estimé de −8 à −12 s ; mesuré **−4,2 s** (27,7 → 23,5 s, voir « Après le correctif de casse »). |
 | **Attente active `NtYieldExecution`** | 118 000 yields/s en Free Play, chacun = 3 appels système (environ 1,6 µs), soit environ 0,2 cœur. Au démarrage, le fil principal y passe 8,7 s de CPU sur les 10 premières secondes. `thread_rusage` de LKD renvoie toujours 0 changement de contexte, donc `SwitchToThread` répond toujours FALSE (« pas de yield »). | Sous LKD : un `NtYieldExecution` sans `getrusage` dans voile-wine, ou bien un `getrusage(RUSAGE_THREAD)` qui renvoie un vrai compteur. Rendre `sched_yield` de LKD aussi bon marché que celui de Darwin (1,26 µs contre 0,23 µs). | Faible, mais la valeur de retour de `SwitchToThread` change le comportement des boucles d'attente du jeu. À vérifier. | De −2 à −3 appels système par yield. Environ 0,1 à 0,2 cœur en jeu ; moins de chauffe sur un portable. Peu d'effet sur la cadence, puisque ce temps est de l'attente. |
 | **wineserver : temps système dans `epoll_pwait2`** | Par tranches de 10 s au menu, wineserver prend jusqu'à 10,5 s de CPU (8 s en système), pour le même nombre d'appels que dans les tranches calmes (0,9 s). Ce temps est caché dans `epoll_pwait2`. | Compter les tours de la boucle `do_wait` de `lkd/src/net/epoll.c` (kqueue lisible alors que `ep_collect` ne rend rien). Corriger si c'est bien une boucle de réveil. | Faible | Jusqu'à un cœur au menu. Peut-être aussi de la latence de wineserver. |
 | **ntsync dans LKD (`/dev/ntsync`)** | Attente ou signal = environ 11 µs et un aller-retour avec wineserver. Aller-retour entre deux fils : 35 µs (contre 5,9 µs avec msync sous macOS). Environ 26 000 requêtes/s en Free Play, de types inconnus. | Un périphérique `/dev/ntsync` dans LKD. Wine et wineserver sont déjà compilés avec ntsync (`HAVE_LINUX_NTSYNC_H`). Les objets doivent être partagés entre processus hôtes : état en mémoire partagée, fds passés par SCM_RIGHTS, WAIT_ALL atomique par instance du périphérique, attentes interruptibles par les signaux LKD. | Moyen. Le point délicat est le multiprocessus, et il ne doit rien changer à ce que voit EAC. | Si la plupart des requêtes sont des waits, des sets et des resets : environ 10 µs par appel. Jusqu'à 0,2 à 0,3 s de fil bloqué par seconde en moins, et une partie des 12 à 28 % de CPU de wineserver. À décider après le comptage des requêtes. |
@@ -227,6 +227,33 @@ Un appel système LKD de base coûte environ 0,15 µs (`clock_gettime`). Les app
 
 Les thunks, le wineserver natif et le cache de code ne se justifient pas avec ces mesures. On les réexaminera si le
 jeu dépasse 60 i/s et que le serveur de rendu devient la limite.
+
+## Après le correctif de casse (21:19)
+
+Correctifs : LKD `ad12111` (`FS_IOC_GETFLAGS` répond casefold pour un dossier d'un volume insensible à la casse) et
+voile-wine `87a1c39b` (sur un tel dossier, un nom 8.3 absent ne fait plus relire le dossier). Le lancement se fait
+depuis SailOver, sans profil, comme la mesure de référence de 17:22.
+
+| Étape | Avant (17:22) | Après (21:19) |
+|---|---|---|
+| `LoadScriptPackages` | 9,9 s | 9,5 s |
+| `InitOnlineSubsystem` | 12,4 s | 8,7 s |
+| **Total jusqu'au menu** | **27,7 s** | **23,5 s** |
+
+`missbench` (fichier absent, dossier de 20 000 fichiers) : nom long 10,5 ms → 86 µs, nom 8.3 11,3 ms → 77 µs. Le
+coût ne dépend plus de la taille du dossier.
+
+Le gain est de 4,2 s, deux fois moins que l'estimation (8 à 12 s). Les relectures de dossiers n'expliquaient donc pas
+tout le temps passé dans `InitOnlineSubsystem`.
+
+Le coût d'une recherche reste de 50 à 90 µs, contre 9 à 17 µs sous le Wine macOS. Ce reste vient des appels de chemin
+de LKD :
+- `newfstatat` : 8 µs ;
+- `openat` : 15 µs ;
+- `getxattr` : 17 µs.
+
+En natif, chacun coûte 1 à 3 µs, et une recherche Wine en fait 5 à 7. C'est une piste à profiler, avec le reste
+d'`InitOnlineSubsystem` (8,7 s).
 
 ## Mesures suivantes
 
