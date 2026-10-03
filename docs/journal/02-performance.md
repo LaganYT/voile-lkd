@@ -383,6 +383,37 @@ Frame back en Free Play à 60 i/s : 4,5/min (20:52, sans ntsync, profil actif), 
 n'en est pas la cause. Leur cause connue reste à corriger : le signal « GPU terminé » de la copie de présentation
 arrive avant que le contenu soit en place.
 
+## Frame back : cause et correctif (4 octobre, 00:05)
+
+À chaque `Present`, le pilote invité Neptune arme un événement à usage unique. Cet événement est lié à la fence
+signalée après la copie dans l'image du swapchain. Son enregistrement (REGISTER) passait par le flux de commandes du
+renderer, alors que l'armement (ARM) et le `SetEventOnCompletion` passent par le ring de méthodes. Quand l'hôte
+décodait le REGISTER en dernier :
+- le proxy créé par l'ARM n'avait que la référence de l'armement ;
+- la fence de présentation relâchait cette référence en s'appariant ;
+- l'événement DXMT se fermait avant que le GPU le signale ;
+- la fermeture de son pipe (`POLLHUP` sans jeton) retirait la fence avant la copie.
+
+wsd montrait alors l'image avec son contenu de 2 ou 3 présentations plus tôt.
+
+Ce qui l'a montré :
+- **La sonde de wsd** : au moment de l'encodage comme après le GPU, la mémoire contient encore les anciens pixels.
+  La copie n'avait donc pas eu lieu ; ce n'était pas un cache GPU.
+- **Le serveur de rendu instrumenté** : 189 fences retirées sur une fd morte en 71 s, toutes des jetons de swapchain.
+  Le proxy enregistré pour le jeton à ce moment n'avait jamais créé de pipe : c'était un second proxy, créé par le
+  REGISTER arrivé en retard.
+
+Correctif : Neptune `22d94ed`. Le REGISTER et le RELEASE de ces jetons passent par le ring de méthodes, comme les
+événements Win32 de `npt_event_arm`.
+
+| Free Play à 60 i/s | Avant (23:58) | Après (00:04) |
+|---|---|---|
+| Fences retirées sur une fd morte | 189 en 71 s | 0 en 2 min |
+| Frame back vus par wsd | 45 en environ 65 s (39/min) | 2 en 2 min |
+
+Les 2 restants tombent la même seconde, pendant des images tenues 50 à 70 ms au chargement. La sonde de wsd note
+maintenant aussi ce que contient la mémoire à l'encodage et après le GPU.
+
 ## Mesures suivantes
 
 - **Appels système par thread et par type.** Le profil donne les totaux par thread et les types par processus, mais
