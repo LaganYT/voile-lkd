@@ -133,8 +133,8 @@ LT_TEST(endless_retry_is_bounded)
      * in a row, then reports a real fault: a store that keeps failing must not loop forever. */
     LT_EQ(lkd_mm_code_write_fault(lkd_mm_window_guest_hi() - 0x1000), 0); /* a real fault resets the count */
     int ones = 0;
-    for (int i = 0; i < 20 && lkd_mm_code_write_fault(hp + 8) == 1; i++) ones++;
-    LT_EQ(ones, 4);
+    for (int i = 0; i < 2000 && lkd_mm_code_write_fault(hp + 8) == 1; i++) ones++;
+    LT_EQ(ones, 1000);                                  /* MAX_RETRIES in mm/watch.c */
     LT_EQ(lkd_mm_code_write_fault(hp + 0x4008) , 1);   /* a different page starts a new count */
     down();
 }

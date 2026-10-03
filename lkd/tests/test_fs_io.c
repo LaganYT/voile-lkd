@@ -201,6 +201,47 @@ static int count_entries(const char *d, int64_t n, int legacy, char names[][32],
     return k;
 }
 
+/* A directory of game data (Rocket League's CookedPCConsole holds 20,746 files) lists every name once, and fast:
+ * Wine lists the whole directory for each case-insensitive lookup that misses. */
+LT_TEST(getdents_large_directory)
+{
+    enum { N = 20000 };
+    char hp[PATH_MAX];
+    snprintf(hp, sizeof hp, "%s/big", ROOT);
+    LT_EQ(mkdir(hp, 0755), 0);
+    for (int i = 0; i < N; i++) {
+        snprintf(hp, sizeof hp, "%s/big/Package_%05d_SF.upk", ROOT, i);
+        close(open(hp, O_CREAT | O_WRONLY, 0644));
+    }
+    static uint8_t seen[N];
+    memset(seen, 0, sizeof seen);
+    struct timespec t0, t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    int64_t fd = gopen("/big", LX_O_RDONLY | LX_O_DIRECTORY, 0);
+    LT_CHECK(fd >= 0);
+    static char d[32768];
+    int total = 0, dots = 0;
+    for (int64_t n; (n = SC(T, getdents64, fd, P(d), sizeof d)) > 0;) {
+        for (int64_t p = 0; p < n; p += rd16((uint8_t *)d, (int)p + 16)) {
+            const char *nm = d + p + 19;
+            int i;
+            if (!strcmp(nm, ".") || !strcmp(nm, "..")) dots++;
+            else if (sscanf(nm, "Package_%05d_SF.upk", &i) == 1 && i >= 0 && i < N) seen[i]++;
+            total++;
+        }
+    }
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    SC(T, close, fd);
+    LT_EQ(total, N + 2);
+    LT_EQ(dots, 2);
+    int once = 0;
+    for (int i = 0; i < N; i++) once += seen[i] == 1;
+    LT_EQ(once, N);
+    double ms = (double)(t1.tv_sec - t0.tv_sec) * 1e3 + (double)(t1.tv_nsec - t0.tv_nsec) / 1e6;
+    printf("INFO listing %d names took %.1f ms\n", N + 2, ms);
+    LT_CHECK(ms < 150);
+}
+
 LT_TEST(getdents_formats)
 {
     LT_EQ(SC(T, mkdir, P("/dd"), 0755), 0);
@@ -453,6 +494,7 @@ int main(void)
     LT_RUN(read_write_family);
     LT_RUN(sendfile_copy_range);
     LT_RUN(getdents_formats);
+    LT_RUN(getdents_large_directory);
     LT_RUN(namespace_ops);
     LT_RUN(open_rules);
     LT_RUN(attributes);

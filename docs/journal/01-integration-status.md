@@ -188,3 +188,12 @@ Son :
   - WASAPI partagé par événements (`src/wine-linux/tests/wasapitone.c`) : position 2,000 s après 2,154 s, en float 48 kHz stéréo ;
   - le jeu ouvre son flux (format 4 = float, 48 kHz, 2 canaux).
 - Limites : le volume par flux de Wine n'est pas appliqué (seul le silence total l'est, comme wineoss) ; pas de micro.
+
+## Chargements de cartes : de 26–38 s à 2–5 s (2026-10-03, 14:57)
+
+MESURE (profil `sample` de chaque processus invité, déclenché par chaque `LoadMap:` de `Launch.log`, lancements par SailOver) :
+- Avant : Free Play 37,8 s, retour au menu 18,4 s, démarrage jusqu'au menu 80,6 s. Le fil principal du jeu passait 69 % du chargement bloqué dans `read` sur un tube (attentes Wine), 10 % dans `getdents64`, 10 % dans le code JIT. Le serveur de rendu et wineserver étaient presque inactifs.
+- `getdents` : `snap_add` comparait chaque nom à tous les précédents. `CookedPCConsole` contient 20 746 fichiers, soit environ 215 millions de `strcmp` et 357 ms par listage. Wine liste le dossier à chaque recherche insensible à la casse qui échoue. Les noms d'un `readdir` hôte sont uniques : seuls les points de montage et les dossiers virtuels gardent la vérification. Listage : 6,4 ms (test `getdents_large_directory`).
+- LKD était compilé en Debug (sans optimisation) par défaut, et c'est ce binaire qui partait dans l'archive `lkd`. `lkd/build.sh` compile désormais en Release. Toute la suite passe en Release (le test de borne de `mm/watch.c` attendait encore l'ancienne borne de 4).
+- Après les deux correctifs : Free Play 4,6 s, menu 1,6 à 2,3 s, démarrage 28,3 s, arène en ligne 3,6 s. Le match en ligne a tenu jusqu'à la sortie du joueur, sans « Error: 42 ». Pendant le chargement Free Play, aucun processus n'est saturé (wineserver à environ 6 %).
+

@@ -13,10 +13,13 @@
 
 #include "fs_priv.h"
 
-static int snap_add(struct fs_file *f, size_t *cap, const char *name, uint64_t ino, uint8_t type)
+/* unique: the caller knows the name is not in the snapshot yet (a host readdir lists each name once). The check
+ * is linear, and a host directory can hold tens of thousands of names (Rocket League's CookedPCConsole: 20,746). */
+static int snap_add(struct fs_file *f, size_t *cap, const char *name, uint64_t ino, uint8_t type, int unique)
 {
-    for (size_t i = 0; i < f->nents; i++)
-        if (strcmp(f->ents[i].name, name) == 0) return 0;
+    if (!unique)
+        for (size_t i = 0; i < f->nents; i++)
+            if (strcmp(f->ents[i].name, name) == 0) return 0;
     if (f->nents == *cap) {
         size_t nc = *cap ? *cap * 2 : 32;
         struct fs_dirent *ne = realloc(f->ents, nc * sizeof *ne);
@@ -54,13 +57,13 @@ static int snapshot(lkd_task *t, lkd_fdobj *o, struct fs_file *f)
         struct dirent *de;
         errno = 0;
         while ((de = readdir(dir)) != NULL) {
-            rc = snap_add(f, &cap, de->d_name, de->d_ino, lkd_dtype_from_host(de->d_type));
+            rc = snap_add(f, &cap, de->d_name, de->d_ino, lkd_dtype_from_host(de->d_type), 1);
             if (rc < 0) break;
         }
         closedir(dir);
     } else {
-        rc = snap_add(f, &cap, ".", o->ino ? o->ino : name_hash(gp), LX_DT_DIR);
-        if (rc == 0) rc = snap_add(f, &cap, "..", name_hash(".."), LX_DT_DIR);
+        rc = snap_add(f, &cap, ".", o->ino ? o->ino : name_hash(gp), LX_DT_DIR, 1);
+        if (rc == 0) rc = snap_add(f, &cap, "..", name_hash(".."), LX_DT_DIR, 0);
         const struct fs_mount *m = fs_mount_find(gp);
         if (rc == 0 && m && m->kind == FS_MNT_VIRT && m->ops->readdir) {
             const char *rel = m->glen == 1 ? gp : gp + m->glen;
@@ -75,7 +78,7 @@ static int snapshot(lkd_task *t, lkd_fdobj *o, struct fs_file *f)
                 if (r == 0) break;
                 name[255] = 0;
                 if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) continue;
-                rc = snap_add(f, &cap, name, ino ? ino : name_hash(name), ty);
+                rc = snap_add(f, &cap, name, ino ? ino : name_hash(name), ty, 0);
             }
         }
     }
@@ -96,7 +99,7 @@ static int snapshot(lkd_task *t, lkd_fdobj *o, struct fs_file *f)
         if (cl == 0 || cl >= sizeof comp) continue;
         memcpy(comp, rest, cl);
         comp[cl] = 0;
-        rc = snap_add(f, &cap, comp, name_hash(mp), LX_DT_DIR);
+        rc = snap_add(f, &cap, comp, name_hash(mp), LX_DT_DIR, 0);
     }
     if (rc == 0) f->snap_valid = 1;
     return rc;
