@@ -513,9 +513,23 @@ static CAMetalLayer *make_metal_layer(void) {
   if (self.overlay) [self.overlay tickPlane];
 }
 
+/* The fingerprint of the 64 probe pixels as the CPU reads them in memory (same grid and hash as the GPU copy). */
+static uint64_t cpu_probe_hash(WsdBuffer *b) {
+  uint64_t h = 1469598103934665603ull;
+  for (uint32_t y = 0; y < 8; y++)
+    for (uint32_t x = 0; x < 8; x++) {
+      uint32_t px, cx = b.width * (2 * x + 1) / 16, cy = b.height * (2 * y + 1) / 16;
+      memcpy(&px, b.cpu + (size_t)cy * b.stride + (size_t)cx * 4, 4);
+      h = (h ^ px) * 1099511628211ull;
+    }
+  return h;
+}
+
 /* Called in drawing order with the fingerprint of the probe pixels the GPU copied (tickPlane); logs a frame back with
- * the wall-clock time. */
-- (void)checkGpuFrameBack:(uint64_t)h serial:(uint64_t)serial buffer:(uint32_t)bufferId {
+ * the wall-clock time, and what the CPU read in memory when the frame was encoded and when the GPU had finished:
+ * the old pixels too (the new ones were not there yet) or the new ones (the GPU read stale data). */
+- (void)checkGpuFrameBack:(uint64_t)h serial:(uint64_t)serial buffer:(uint32_t)bufferId cpuAtEncode:(uint64_t)ce
+                cpuAfter:(uint64_t)ca {
   enum { N = 6 };
   if (!self.gpuHash) {
     self.gpuHash = calloc(N, sizeof(uint64_t));
@@ -530,8 +544,10 @@ static CAMetalLayer *make_metal_layer(void) {
         struct tm lt;
         localtime_r(&tv.tv_sec, &lt);
         LOG("window %u %s: frame back at %02d:%02d:%02d.%03d: serial %llu (buffer %#x) was drawn with the pixels of serial "
-            "%llu (%d frames earlier)", self.windowId, self.isOverlay ? "overlay" : "base", lt.tm_hour, lt.tm_min,
-            lt.tm_sec, (int)(tv.tv_usec / 1000), (unsigned long long)serial, bufferId, (unsigned long long)S[k], k + 1);
+            "%llu (%d frames earlier); memory at encode: %s, after the GPU: %s", self.windowId,
+            self.isOverlay ? "overlay" : "base", lt.tm_hour, lt.tm_min, lt.tm_sec, (int)(tv.tv_usec / 1000),
+            (unsigned long long)serial, bufferId, (unsigned long long)S[k], k + 1, ce == h ? "old" : "new",
+            ca == h ? "old" : "new");
         break;
       }
   memmove(H + 1, H, (N - 1) * sizeof *H);
@@ -566,7 +582,9 @@ static CAMetalLayer *make_metal_layer(void) {
    * buffer, so the check sees what was drawn. A frame drawn with the pixels of one shown 2 to 5 frames earlier, while
    * the frame just before differs, is the picture going back (a swapchain image shown before its new content). */
   id<MTLBuffer> probe = nil;
+  uint64_t cpuAtEncode = 0;
   if (!redisplay && b.texture && b.width >= 8 && b.height >= 8) {
+    if (b.cpu) cpuAtEncode = cpu_probe_hash(b);
     if (!self.freeProbes) self.freeProbes = [NSMutableArray array];
     probe = self.freeProbes.lastObject;
     if (probe) [self.freeProbes removeLastObject];
@@ -633,10 +651,11 @@ static CAMetalLayer *make_metal_layer(void) {
       uint64_t h = 1469598103934665603ull;
       const uint32_t *px = probe.contents;
       for (int i = 0; i < 64; i++) h = (h ^ px[i]) * 1099511628211ull;
+      uint64_t cpuAfter = b.cpu ? cpu_probe_hash(b) : 0;
       dispatch_async(dispatch_get_main_queue(), ^{
         WsdWindow *sw = weakSelf;
         [sw.freeProbes addObject:probe];
-        [sw checkGpuFrameBack:h serial:serial buffer:b.bufferId];
+        [sw checkGpuFrameBack:h serial:serial buffer:b.bufferId cpuAtEncode:cpuAtEncode cpuAfter:cpuAfter];
       });
     }];
   [cb commit];
