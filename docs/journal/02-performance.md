@@ -359,6 +359,30 @@ protégé avant d'avoir été compris.
 
 Cet incident montre aussi une course : le jeu peut démarrer avant la fin du montage d'EAC quand celui-ci est lent.
 
+## ntsync dans LKD (23:00)
+
+`/dev/ntsync` dans LKD (`f90924f`, `lkd/docs/status/ntsync.md`). Wine 11 l'utilise sans changement : les attentes et
+les signaux d'événements, de mutex et de sémaphores restent dans le processus.
+
+| Mesure | Sans ntsync | Avec ntsync |
+|---|---|---|
+| `WaitForSingleObject(0)` (`winbench`) | 11,8 µs | 0,35 µs |
+| `SetEvent` | 10,7 µs | 0,16 µs |
+| Aller-retour d'événement entre deux fils | 34,7 µs | 8,7 µs |
+| Rocket League, jusqu'au menu (sans profil) | 19,1 à 19,2 s | 18,6 s |
+| Rocket League, « Quitter » → fin du processus | 17,6 à 18,1 s | 10,8 à 11,2 s |
+| Free Play débridé | environ 130 i/s | environ 150 i/s |
+| EAC (montage du module, `bAntiCheatEnabled`) | 0,5 s, True | 0,5 s, True |
+
+En Free Play débridé avec ntsync :
+- le fil principal n'attend plus wineserver ; il attend le fil de rendu (attentes ntsync) ;
+- le fil de rendu est la limite (88 % d'un cœur, dont environ 20 % dans l'attente active de `NtYieldExecution`).
+
+Frame back en Free Play à 60 i/s : 4,5/min (20:52, sans ntsync, profil actif), 23/min (23:05, avec ntsync),
+39/min (23:11, sans ntsync, `LKD_NTSYNC=0`, même binaire). Ils varient beaucoup d'une session à l'autre, et ntsync
+n'en est pas la cause. Leur cause connue reste à corriger : le signal « GPU terminé » de la copie de présentation
+arrive avant que le contenu soit en place.
+
 ## Mesures suivantes
 
 - **Appels système par thread et par type.** Le profil donne les totaux par thread et les types par processus, mais
