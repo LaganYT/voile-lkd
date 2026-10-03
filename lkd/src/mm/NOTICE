@@ -1,0 +1,14 @@
+LKD mm module: files and blocks imported from HyperLinux (Apache-2.0).
+
+HyperLinux, Copyright 2025 Moritz Angermann <moritz@zw3rk.com>, zw3rk pte. ltd.
+SPDX-License-Identifier: Apache-2.0
+Source: rocket-hyperlinux-20260928/hyper-linux/src (read-only working copy).
+
+Imported blocks (marked "imported from HL <file>" in the code):
+- mm.c render_line(): /proc/<pid>/maps line layout (name column 73, newline escaped as \012) from
+  proc_emulation.c proc_maps_fd(), adapted (8-digit address padding, trailing space after the inode,
+  " (deleted)").
+
+Everything else in src/mm is new code written for LKD. The VMA table design replaces HyperLinux's
+guest_vma_t sorted array (guest.c guest_vma_replace/guest_vma_remove: linear memmove, 4144-byte entries)
+with an AVL tree of ~100-byte entries.

@@ -1,0 +1,21 @@
+LKD (Linux kernel on Darwin), private research code for the SailOver project.
+
+This tree incorporates or derives from the following third-party works.
+
+HyperLinux (hyper-linux), Copyright 2025 Moritz Angermann <moritz@zw3rk.com>, zw3rk pte. ltd.
+Licensed under the Apache License, Version 2.0 (http://www.apache.org/licenses/LICENSE-2.0).
+  - src/include/lkd_internal.h and docs/CONVENTIONS.md section 3: the lock ordering list extends the one
+    documented in HyperLinux src/syscall_internal.h (lines 10-38).
+  - Files copied or adapted from HyperLinux by the modules are marked with the comment
+    "imported from HL <file>" and listed in src/<module>/NOTICE. Their original SPDX headers and
+    copyright notices are kept.
+
+Linux kernel uapi headers (v6.12), GPL-2.0 WITH Linux-syscall-note.
+  - include/lkd/syscall_nr.h and src/core/syscall_names.c are generated from
+    arch/x86/entry/syscalls/syscall_64.tbl (the copy and its sha256 are in tools/data/ and in the header).
+  - include/lkd/abi_x64.h restates the numeric ABI (constants and structure layouts) of the x86-64 uapi.
+    The uapi headers carry the Linux-syscall-note exception for exactly this use.
+
+FEX-Emu: signal frame and x86-64 structure layouts are checked against the private research copy of
+FEX (commit 0df84d3). The FEX CLAUDE.md forbids submitting AI-generated code upstream: nothing in this
+tree is submitted to FEX.

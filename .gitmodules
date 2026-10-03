@@ -1,0 +1,4 @@
+[submodule "fex"]
+	path = fex
+	url = https://github.com/Zagrios/FEX.git
+	branch = main

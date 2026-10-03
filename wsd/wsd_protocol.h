@@ -1,0 +1,216 @@
+/*
+ * wsd_protocol.h - wire format of the SailOver window server (wsd). See PROTOCOL.md.
+ *
+ * Every message: struct wsd_hdr followed by `len` payload bytes (len <= WSD_MAX_PAYLOAD).
+ * All fields little-endian, fixed width, naturally aligned; the same layout holds for a
+ * Linux x86-64 client (checked by the static asserts below). At most one fd rides on a
+ * message (SCM_RIGHTS); only BUFFER_ATTACH carries one.
+ */
+#ifndef WSD_PROTOCOL_H
+#define WSD_PROTOCOL_H
+
+#include <stdint.h>
+
+#define WSD_PROTOCOL_VERSION 1u
+#define WSD_MAX_PAYLOAD 4096u
+#define WSD_MAX_WINDOWS 16u
+#define WSD_MAX_BUFFERS 32u
+
+struct wsd_hdr {
+  uint32_t type;
+  uint32_t len; /* payload bytes after this header */
+};
+
+/* client -> server */
+enum {
+  WSD_HELLO = 1,           /* wsd_hello */
+  WSD_WINDOW_CREATE = 2,   /* wsd_window_create + UTF-8 title (rest of payload) */
+  WSD_WINDOW_DESTROY = 3,  /* wsd_window */
+  WSD_WINDOW_SHOW = 4,     /* wsd_window_flag (value: 1 show, 0 hide) */
+  WSD_WINDOW_FULLSCREEN = 5, /* wsd_window_flag (value: 1 on, 0 off) */
+  WSD_CURSOR_VISIBLE = 6,  /* wsd_window_flag (window ignored, value: visible) */
+  WSD_CURSOR_CLIP = 7,     /* wsd_cursor_clip */
+  WSD_RELATIVE_MOUSE = 8,  /* wsd_window_flag (value: 1 relative, 0 absolute) */
+  WSD_BUFFER_ATTACH = 9,   /* wsd_buffer_attach + 1 fd */
+  WSD_BUFFER_DETACH = 10,  /* wsd_buffer */
+  WSD_PRESENT = 11,        /* wsd_present */
+  WSD_SET_TITLE = 12,      /* wsd_window + UTF-8 title */
+  WSD_SET_FRAME_RATE = 13, /* wsd_window_flag (value: preferred Hz, 0 = display default) */
+  WSD_PING = 14,           /* wsd_ping */
+  WSD_DEBUG_INJECT = 15,   /* wsd_window_flag (value: scenario); synthetic NSEvents, test only */
+  WSD_QUIT = 16,           /* no payload; server exits after flushing */
+  WSD_WINDOW_SET_FRAME = 17, /* wsd_window_frame: content position and size in screen pixels */
+  WSD_PRESENT_REGION = 18, /* wsd_present_region: present into an overlay plane at a rectangle of the window */
+  WSD_DEBUG_INPUT = 19,    /* wsd_debug_input: test only, synthetic input to the largest visible window of any client */
+  WSD_AUDIO_OPEN = 20,     /* wsd_audio_open + 1 fd: an output stream reading a shared ring (struct wsd_audio_ring) */
+  WSD_AUDIO_START = 21,    /* wsd_audio_stream: the server starts consuming the ring */
+  WSD_AUDIO_STOP = 22,     /* wsd_audio_stream: pause, unread frames stay in the ring */
+  WSD_AUDIO_RESET = 23,    /* wsd_audio_stream: (stopped) drop unread frames: read position = write position */
+  WSD_AUDIO_CLOSE = 24,    /* wsd_audio_stream */
+};
+
+/* server -> client */
+enum {
+  WSD_EV_HELLO = 101,      /* wsd_hello_reply */
+  WSD_EV_KEY = 102,        /* wsd_ev_key + UTF-8 characters */
+  WSD_EV_BUTTON = 103,     /* wsd_ev_button */
+  WSD_EV_MOTION = 104,     /* wsd_ev_motion (absolute, window pixels, top-left origin) */
+  WSD_EV_RELATIVE = 105,   /* wsd_ev_relative (raw deltas, relative mode only) */
+  WSD_EV_WHEEL = 106,      /* wsd_ev_wheel */
+  WSD_EV_FOCUS = 107,      /* wsd_window_flag (value: 1 in, 0 out) */
+  WSD_EV_RESIZE = 108,     /* wsd_ev_resize */
+  WSD_EV_CLOSE = 109,      /* wsd_window (close button pressed; window stays open) */
+  WSD_EV_PRESENTED = 110,  /* wsd_ev_presented */
+  WSD_EV_RELEASE = 111,    /* wsd_ev_release (server no longer reads the buffer) */
+  WSD_EV_PONG = 112,       /* wsd_ping */
+  WSD_EV_ERROR = 113,      /* wsd_ev_error */
+};
+
+enum { WSD_FMT_BGRA8 = 1, WSD_FMT_RGBA8 = 2 };
+
+enum {
+  WSD_STYLE_TITLED = 1u << 0,
+  WSD_STYLE_CLOSABLE = 1u << 1,
+  WSD_STYLE_RESIZABLE = 1u << 2,
+  WSD_STYLE_MINIATURIZABLE = 1u << 3,
+  WSD_STYLE_BORDERLESS = 1u << 4, /* overrides the others */
+  WSD_STYLE_TOPMOST = 1u << 5,    /* NSFloatingWindowLevel (HWND_TOPMOST) */
+};
+
+/* wsd_ev_key.flags / modifiers mirror NSEventModifierFlags bits 16..23 shifted down by 16. */
+enum { WSD_KEY_DOWN = 1u << 0, WSD_KEY_REPEAT = 1u << 1, WSD_KEY_SYNTHETIC = 1u << 31 };
+
+struct wsd_hello { uint32_t version, client_pid; };
+struct wsd_hello_reply {
+  uint32_t version, server_pid;
+  uint32_t display_width_px, display_height_px; /* main screen, backing pixels */
+  uint32_t max_refresh_hz;                      /* NSScreen.maximumFramesPerSecond */
+  uint32_t backing_scale_x1000;
+};
+struct wsd_window_create {
+  uint32_t window_id; /* chosen by the client, nonzero */
+  uint32_t width_px, height_px;
+  uint32_t style;
+};
+struct wsd_window { uint32_t window_id; };
+struct wsd_window_flag { uint32_t window_id; uint32_t value; };
+struct wsd_cursor_clip {
+  uint32_t window_id;
+  uint32_t enable;
+  int32_t x, y; /* window pixels, top-left origin */
+  uint32_t width, height;
+};
+struct wsd_buffer_attach {
+  uint32_t buffer_id; /* chosen by the client, nonzero */
+  uint32_t width, height;
+  uint32_t stride;    /* bytes per row */
+  uint32_t format;    /* WSD_FMT_* */
+  uint32_t reserved;
+  uint64_t offset;    /* byte offset of the first row within the fd */
+  uint64_t size;      /* stride * height */
+};
+struct wsd_buffer { uint32_t buffer_id; };
+struct wsd_window_frame {
+  uint32_t window_id;
+  uint32_t flags;          /* WSD_FRAME_* */
+  int32_t x, y;            /* content top-left, screen pixels, origin top-left of the main screen */
+  uint32_t width, height;  /* content size in pixels */
+};
+enum { WSD_FRAME_MOVE = 1u << 0, WSD_FRAME_SIZE = 1u << 1 };
+struct wsd_present {
+  uint32_t window_id, buffer_id;
+  uint64_t serial;
+  uint64_t client_time_ns; /* clock_gettime_nsec_np(CLOCK_UPTIME_RAW) at submit */
+};
+struct wsd_ping { uint64_t token; uint64_t time_ns; };
+struct wsd_debug_input {
+  uint32_t kind;   /* 1 key (a = mac keycode, b = 1 down / 0 up), 2 left click at window pixels (a, b) */
+  uint32_t a, b;
+  uint32_t reserved;
+};
+struct wsd_present_region {
+  struct wsd_present present;
+  int32_t x, y;            /* overlay rectangle in window pixels, top-left origin */
+  uint32_t width, height;  /* 0x0: remove the overlay plane (present.buffer_id ignored) */
+};
+
+/* Audio output (PCM, interleaved, little-endian). The client writes frames at ring frame (write_frames % ring_frames)
+ * and then publishes write_frames (release); the server's audio callback reads from read_frames and publishes it
+ * (release). Both counters only grow (64-bit frame counts); unread = write_frames - read_frames <= ring_frames.
+ * The ring data follows the 64-byte header at `offset` in the fd. */
+enum { WSD_AUDIO_S16 = 1, WSD_AUDIO_S24 = 2, WSD_AUDIO_S32 = 3, WSD_AUDIO_F32 = 4, WSD_AUDIO_U8 = 5 };
+struct wsd_audio_ring {
+  uint64_t write_frames;  /* client */
+  uint64_t read_frames;   /* server */
+  uint64_t underrun_frames; /* server: silence frames played while running with an empty ring */
+  uint64_t reserved[5];
+};
+struct wsd_audio_open {
+  uint32_t stream_id;     /* chosen by the client, nonzero */
+  uint32_t format;        /* WSD_AUDIO_* */
+  uint32_t rate;          /* frames per second */
+  uint32_t channels;
+  uint32_t frame_bytes;   /* bytes per frame (channels * sample bytes) */
+  uint32_t ring_frames;
+  uint64_t offset;        /* byte offset of struct wsd_audio_ring within the fd */
+  uint64_t size;          /* 64 + ring_frames * frame_bytes */
+};
+struct wsd_audio_stream { uint32_t stream_id; uint32_t reserved; };
+
+struct wsd_ev_key {
+  uint32_t window_id;
+  uint32_t flags;      /* WSD_KEY_* */
+  uint32_t mac_keycode; /* kVK_* virtual keycode */
+  uint32_t modifiers;
+  uint64_t time_ns;
+};
+struct wsd_ev_button {
+  uint32_t window_id;
+  uint32_t button; /* 0 left, 1 right, 2 middle, 3.. others */
+  uint32_t down;
+  uint32_t modifiers;
+  float x, y;
+  uint64_t time_ns;
+};
+struct wsd_ev_motion { uint32_t window_id; uint32_t flags; float x, y; uint64_t time_ns; };
+struct wsd_ev_relative { uint32_t window_id; uint32_t flags; float dx, dy; uint64_t time_ns; };
+struct wsd_ev_wheel { uint32_t window_id; uint32_t precise; float dx, dy; uint64_t time_ns; };
+struct wsd_ev_resize { uint32_t window_id; uint32_t width_px, height_px; uint32_t backing_scale_x1000; };
+struct wsd_ev_presented {
+  uint32_t window_id, buffer_id;
+  uint64_t serial;
+  uint64_t client_time_ns;   /* echoed */
+  uint64_t received_ns;      /* server got the PRESENT */
+  uint64_t encoded_ns;       /* display-link tick that encoded it */
+  uint64_t presented_ns;     /* CAMetalDrawable.presentedTime, 0 if never shown */
+  uint32_t replaced;         /* frames released unshown since the previous present (mailbox) */
+  uint32_t reserved;
+};
+struct wsd_ev_release { uint32_t buffer_id; uint32_t shown; uint64_t serial; };
+struct wsd_ev_error { uint32_t request_type; int32_t code; };
+
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+#define WSD_ASSERT_SIZE(t, n) _Static_assert(sizeof(struct t) == (n), #t " layout")
+#elif defined(__cplusplus)
+#define WSD_ASSERT_SIZE(t, n) static_assert(sizeof(struct t) == (n), #t " layout")
+#else
+#define WSD_ASSERT_SIZE(t, n)
+#endif
+WSD_ASSERT_SIZE(wsd_hdr, 8);
+WSD_ASSERT_SIZE(wsd_hello_reply, 24);
+WSD_ASSERT_SIZE(wsd_window_create, 16);
+WSD_ASSERT_SIZE(wsd_cursor_clip, 24);
+WSD_ASSERT_SIZE(wsd_buffer_attach, 40);
+WSD_ASSERT_SIZE(wsd_present, 24);
+WSD_ASSERT_SIZE(wsd_window_frame, 24);
+WSD_ASSERT_SIZE(wsd_present_region, 40);
+WSD_ASSERT_SIZE(wsd_debug_input, 16);
+WSD_ASSERT_SIZE(wsd_audio_ring, 64);
+WSD_ASSERT_SIZE(wsd_audio_open, 40);
+WSD_ASSERT_SIZE(wsd_ev_key, 24);
+WSD_ASSERT_SIZE(wsd_ev_button, 32);
+WSD_ASSERT_SIZE(wsd_ev_motion, 24);
+WSD_ASSERT_SIZE(wsd_ev_presented, 56);
+WSD_ASSERT_SIZE(wsd_ev_release, 16);
+
+#endif

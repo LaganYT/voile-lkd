@@ -1,0 +1,16 @@
+fs module of LKD: files derived from HyperLinux (hyper-linux)
+
+HyperLinux, Copyright 2025 Moritz Angermann <moritz@zw3rk.com>, zw3rk pte. ltd.
+Licensed under the Apache License, Version 2.0 (http://www.apache.org/licenses/LICENSE-2.0).
+The original working copy (read-only) is
+build/experiments/rocket-hyperlinux-20260928/hyper-linux/src.
+
+Imported and adapted blocks (each marked "imported from HL <file>" in the source):
+  - src/fs/vfs.c, fs_resolve(): the component-by-component resolver loop of HL vfs.c
+    (hl_vfs_resolve_at). Adapted: per-task root and cwd (fsctx), virtual mounts and magic links,
+    Linux trailing-slash rules, openat2 RESOLVE_* restrictions, x86-64 errno constants.
+  - src/fs/tty.c: the termios flag translation helpers and the c_cc index table of HL syscall_io.c.
+    Adapted: x86-64 TCGETS uses the 36-byte kernel termios, the speed is carried in CBAUD.
+
+The other files of src/fs were written for LKD; their design follows the HL modules fd_object.c,
+syscall_fd.c, syscall_fs.c, syscall_io.c, syscall_reopen.c and syscall_stats.c (read, not copied).

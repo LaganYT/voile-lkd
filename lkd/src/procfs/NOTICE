@@ -1,0 +1,15 @@
+procfs module of LKD (Linux kernel on Darwin), private research code for the SailOver project.
+
+No block of HyperLinux is copied into this module. HyperLinux src/proc_emulation.c, proc_names.c and device.c
+were read as a reference for which paths programs open (Apache-2.0, Copyright 2025 Moritz Angermann
+<moritz@zw3rk.com>, zw3rk pte. ltd.); the files here are written for LKD.
+
+src/procfs/global.c (render_cpuinfo): the structure of /proc/cpuinfo and the list of CPUID bits that become flags
+follow FEX-Emu Source/Tools/LinuxEmulation/LinuxSyscalls/EmulatedFiles/EmulatedFiles.cpp GenerateCPUInfo
+(commit 0df84d3, SPDX-License-Identifier: MIT, Copyright FEX-Emu contributors), rewritten in C with the Linux
+spelling of three flag names. The FEX CLAUDE.md forbids submitting AI-generated code upstream: nothing here is
+submitted to FEX.
+
+Output formats restate those of the Linux kernel v6.12 (GPL-2.0 WITH Linux-syscall-note for uapi): fs/proc/array.c,
+fs/proc/task_mmu.c, fs/proc/base.c, fs/proc/meminfo.c, arch/x86/kernel/cpu/proc.c, drivers/base/topology.c. No kernel
+source text is copied; only the printed formats and field orders, which are part of the user-space ABI.

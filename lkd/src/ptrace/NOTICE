@@ -1,0 +1,21 @@
+ptrace module of LKD: blocks derived from HyperLinux (hyper-linux)
+
+HyperLinux, Copyright 2025 Moritz Angermann <moritz@zw3rk.com>, zw3rk pte. ltd.
+Licensed under the Apache License, Version 2.0 (http://www.apache.org/licenses/LICENSE-2.0).
+SPDX-License-Identifier: Apache-2.0
+The original working copy (read-only) is
+build/experiments/rocket-hyperlinux-20260928/hyper-linux/src.
+
+Imported and adapted (each marked "imported from HL <file>" in the source):
+  - src/ptrace/transport.c: the durable shared-record scheme of proc_ptrace.c (lock_state/unlock_state: a
+    process-local mutex plus an fcntl byte-range lock that the host kernel drops when the holder dies; the
+    rule "a notification carries no state, the shared record is authoritative"). Adapted: one family-wide
+    table of 512 slots instead of one file per fork, notifications carried by the family service.
+  - src/ptrace/stop.c: the publish / park / re-read shape of trace_stop(), and the rule that a tracer which
+    disappears resumes the tracee with its signal suppressed (detach_link()). Adapted: x86-64 register view,
+    commands applied by the tracee at resume, FP images, siginfo, syscall-stop conventions.
+  - src/ptrace/life.c: the stop-sequence versus consumed-sequence reporting of proc_trace_wait() (WNOWAIT
+    keeps the event), and the tracer-exit detach of proc_trace_tracer_exit().
+
+The other code in src/ptrace was written for LKD from the Linux v6.12 sources (kernel/ptrace.c,
+arch/x86/kernel/ptrace.c, kernel/signal.c ptrace_stop, kernel/exit.c wait_task_stopped).

@@ -1,0 +1,17 @@
+net module of LKD: files derived from HyperLinux (hyper-linux)
+
+HyperLinux, Copyright 2025 Moritz Angermann <moritz@zw3rk.com>, zw3rk pte. ltd.
+Licensed under the Apache License, Version 2.0 (http://www.apache.org/licenses/LICENSE-2.0).
+The original working copy (read-only) is
+build/experiments/rocket-hyperlinux-20260928/hyper-linux/src.
+
+Imported and adapted blocks (each marked "imported from HL <file>" in the source):
+  - src/net/unixaddr.c, abstract_dir() and abstract_to_path(): the per-user private directory and the
+    FNV-1a mapping of an abstract AF_UNIX name to a socket file of HL syscall_net.c (hl_abstract_dir,
+    abstract_to_path). Adapted: LKD directory name, no process-wide lock table (a flock'ed lock file per
+    name and a name file for getsockname/getpeername are kept instead).
+
+The other files of src/net were written for LKD; their design follows the HL modules syscall_net.c,
+syscall_poll.c, syscall_fd.c and syscall_inotify.c (read, not copied): the sockaddr/option/flag translation
+tables come from core (src/core/xlate.c), epoll over kqueue with EV_CLEAR and EV_ONESHOT follows
+syscall_poll.c, the inotify subset follows the limits listed in the header of src/net/inotify.c.

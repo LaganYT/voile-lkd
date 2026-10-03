@@ -1,0 +1,14 @@
+[package]
+name = "epic-launch"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Private experiment tool: builds the Epic launch plan of an installed game from a staged session, with SailOver's own
+# epic-kit crate. It never prints a token, a code or an argument value.
+[dependencies]
+epic-kit = { path = "../../../../../crates/storefronts/epic-kit" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+serde_json = "1"
+
+[workspace]

@@ -1,0 +1,5 @@
+Precompiled DXBC (SM 5.0) copied from utmapp/dxmt tests/native at commit bcdcf6da89af6c9fedeb2fc92b4367b23d5d6ed6.
+Upstream README (tests/native/README.md): compiled offline with fxc on Windows, embedded with 'xxd -n dxbc_<name> -i <name>.cso'.
+Source HLSL: shaders.hlsl (same commit). Not regenerated here (no fxc on macOS).
+e26555e2fbab788082252e1f8051bd9108752d9d4361e6ef041805b74e81a8ad  dxbc/shaders_dxbc.h
+9ec4e7a2157c6f5aedf7a892b8606f216e931f00914bcc7e1cf864138a571f08  dxbc/shaders.hlsl

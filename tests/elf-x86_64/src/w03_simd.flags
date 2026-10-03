@@ -1,0 +1,1 @@
+-mavx2 -mfma -mf16c -msse4.2 -mpclmul -maes -mpopcnt -ffp-contract=off

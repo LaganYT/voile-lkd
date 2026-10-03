@@ -1,0 +1,11 @@
+build/
+build.configure.log
+*.o
+*.a
+.cache/
+.DS_Store
+__pycache__/
+target/
+tests/*/bin/
+tests/*/bin-exec/
+wsd/bin/
