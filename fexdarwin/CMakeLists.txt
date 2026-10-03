@@ -15,6 +15,7 @@ set(FEX_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../fex" CACHE PATH "FEX source t
 set(LKD_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../lkd" CACHE PATH "LKD source tree")
 set(LKD_LIB "${LKD_DIR}/build/lib/liblkd.a" CACHE FILEPATH "liblkd.a")
 set(FEX_BUILD_DIR "${CMAKE_CURRENT_SOURCE_DIR}/build/fexcore" CACHE PATH "Build directory of FEXCore (stage 1)")
+option(FEX_ASSERTIONS "FEXCore (stage 1) was built with ENABLE_ASSERTIONS" OFF)
 
 foreach(L
     FEXCore/Source/libFEXCore.a FEXCore/Source/libFEXCore_Base.a FEXCore/Source/libJemallocDummy.a
@@ -56,10 +57,13 @@ set_source_files_properties(src/LkdShim.c PROPERTIES INCLUDE_DIRECTORIES ${LKD_D
 
 # These must match the definitions FEXCore itself was compiled with: several public structs change layout with them.
 target_compile_definitions(fexdarwin-run PRIVATE
-  ARCHITECTURE_arm64=1 ASSERTIONS_ENABLED=1 FEX_DARWIN=1 FEX_DISABLE_TELEMETRY=1
+  ARCHITECTURE_arm64=1 FEX_DARWIN=1 FEX_DISABLE_TELEMETRY=1
   FEX_HAS_PRESERVE_ALL_ATTR=1 "FEX_PRESERVE_ALL_ATTR=__attribute__((preserve_all))"
   FEXCORE_HAS_PRESERVE_ALL_ATTR=1 "FEXCORE_PRESERVE_ALL_ATTR=__attribute__((preserve_all))"
   JIT_ARM64 _LARGEFILE64_SOURCE)
+if (FEX_ASSERTIONS)
+  target_compile_definitions(fexdarwin-run PRIVATE ASSERTIONS_ENABLED=1)
+endif()
 target_compile_options(fexdarwin-run PRIVATE -Wall -Wno-trigraphs -Wno-deprecated-enum-enum-conversion -fno-strict-aliasing -fno-exceptions)
 target_link_libraries(fexdarwin-run PRIVATE ${FEX_LIBS} pthread)
 # LKD holds weak default hooks and strong module code: force_load keeps the strong definitions.
