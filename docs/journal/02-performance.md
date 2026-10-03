@@ -255,6 +255,43 @@ de LKD :
 En natif, chacun coûte 1 à 3 µs, et une recherche Wine en fait 5 à 7. C'est une piste à profiler, avec le reste
 d'`InitOnlineSubsystem` (8,7 s).
 
+## `LoadScriptPackages` et `InitOnlineSubsystem` en détail (21:30)
+
+Profil toutes les 2 s (`FEXDARWIN_PROFILE_MS=2000`), avec, pour chaque thread, les appels système qui lui ont pris le
+plus de temps. Ce lancement a pris 23,7 s, avec le correctif de casse : la mesure perturbe peu. `LoadScriptPackages`
+couvre de 21:30:30,4 à 21:30:40,2, et `InitOnlineSubsystem` de 21:30:41,8 à 21:30:50,6.
+
+| Tranche | Durée | Ce qui la limite |
+|---|---|---|
+| 30,4–31,6 | 1,2 s | fil principal : appels de fichiers (24 000 `getxattr`, 15 000 `newfstatat` en 2 s) |
+| 31,6–35,7 | 4,1 s | chargement asynchrone. `AsyncIOSystem` passe 95 % de son temps bloqué dans `read`, en attente des réponses de wineserver (environ 45 000 `read` et autant d'écritures par seconde, pour 4 500 vraies lectures de fichier, `pread64`). Le fil 117 fait 4 500 `mmap` et 4 500 `mprotect` par seconde (30 µs le `mmap`). wineserver traite environ 50 000 requêtes/s, à 37 % d'un cœur. Le fil principal attend en tournant (900 000 `sched_yield` en 2 s). |
+| 35,7–37,9 | 2,2 s | fil principal : calcul pur (100 % d'un cœur, presque sans appels système) |
+| 37,9–40,2 | 2,3 s | fil principal : appels de fichiers (75 000 `getxattr`, 67 000 `newfstatat`, 9 600 `openat` en 2 s) |
+| `InitOnlineSubsystem`, 41,8–50,6 | 8,8 s | fil principal à 100 %, environ 20 000 fichiers absents par seconde. Chaque seconde : 68 000 `newfstatat` (9 µs), 20 000 `openat` (18 µs), 20 000 `ioctl` de casse, 20 000 `close`. |
+
+Deux causes se partagent donc environ 15 s des 23,7 s :
+
+- **Le coût des appels de chemin dans LKD (environ 10 s).** `fs_resolve` (`lkd/src/fs/vfs.c`) parcourt le chemin
+  composant par composant, et `lookup` fait un `lstat` hôte sur le chemin complet de chaque préfixe. Un chemin de
+  12 composants coûte donc 12 `lstat`, chacun sur un chemin long.
+
+  Un échantillonnage de `missbench` (pas du jeu) le confirme : `lstat` fait 60 % des échantillons actifs,
+  `open` 17 %, `readlink` 7 %.
+
+  Piste : tenter d'abord le reste du chemin en un seul `fstatat(..., AT_SYMLINK_NOFOLLOW_ANY)`. macOS fait alors
+  échouer l'appel dès qu'un composant est un lien symbolique, et on ne revient à la marche composant par composant
+  que dans ce cas, par exemple pour le lien `dosdevices/c:` de Wine. Pour un nom absent, on vérifie le parent de la
+  même façon. Il n'y a ni cache ni invalidation, donc la sémantique ne change pas.
+
+  Estimation : `newfstatat` de 9 à 3 µs environ, `openat` de 18 à 6 µs. Cela ferait environ −4 s sur
+  `InitOnlineSubsystem` et −1,5 s sur `LoadScriptPackages`, à vérifier avec `missbench`.
+- **Les allers-retours avec wineserver pendant le chargement asynchrone (environ 4 s).** Il faut savoir quelles
+  requêtes sont en cause (compteur par type de requête) avant de choisir entre ntsync dans LKD et un chemin d'E/S
+  asynchrones plus direct.
+
+Le reste est du calcul (2,2 s, au niveau de Rosetta d'après `winbench`), plus `PreInit` (2,3 s) et les autres
+étapes.
+
 ## Mesures suivantes
 
 - **Appels système par thread et par type.** Le profil donne les totaux par thread et les types par processus, mais

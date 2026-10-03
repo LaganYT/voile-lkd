@@ -669,10 +669,7 @@ void LkdHandleSyscall(GuestThread* T, FEXCore::Core::CpuStateFrame* Frame) {
   const uint64_t T0 = HitchLog::ProfileEnabled() ? HitchLog::NowNs() : 0;
   const lkd_disp D = lkd_syscall(T->Task, &Rq, &Rax);
   if (T0) {
-    const uint64_t Ns = HitchLog::NowNs() - T0;
-    T->SysCount.fetch_add(1, std::memory_order_relaxed);
-    T->SysNs.fetch_add(Ns, std::memory_order_relaxed);
-    HitchLog::NoteSyscall(Rq.nr, Ns);
+    HitchLog::NoteSyscall(T, Rq.nr, HitchLog::NowNs() - T0);
   }
   switch (D) {
   case LKD_RETURN: St.gregs[X::REG_RAX] = static_cast<uint64_t>(Rax); break;

@@ -5,14 +5,17 @@
 // SMC write faults and code invalidations. A watcher thread looks at 50 ms windows and logs, with the wall-clock time,
 // each window where one of them took more than 8 ms, and a summary every 10 s.
 //
-// Profile (FEXDARWIN_PROFILE=1): every 10 s the same watcher logs where the process spent its time: CPU of the process
+// Profile (FEXDARWIN_PROFILE=1, period FEXDARWIN_PROFILE_MS, 10000 by default): the same watcher logs where the process spent its time: CPU of the process
 // and of each guest thread (named by its guest comm), guest system calls (count and time inside LKD, which includes
-// blocking waits), translation time, and the system calls that took the most time.
+// blocking waits) with the ones that took each thread the most time, translation time, and the system calls that took
+// the process the most time.
 #pragma once
 
 #include <FEXCore/Debug/InternalThreadState.h>
 
 #include <cstdint>
+
+struct GuestThread;
 
 namespace HitchLog {
 bool Enabled();        // hitch log or profile: threads get a ThreadStats block, SMC and invalidations are timed
@@ -29,8 +32,8 @@ enum class Kind { SmcFault, Invalidate };
 void NoteSmcPage(uint64_t GuestAddress);
 void Add(Kind K, uint64_t Ns, uint64_t Bytes = 0);
 uint64_t NowNs();
-// Profile: one guest system call of Ns nanoseconds (wall time inside LKD).
-void NoteSyscall(uint64_t Nr, uint64_t Ns);
+// Profile: one guest system call of thread T, Ns nanoseconds (wall time inside LKD).
+void NoteSyscall(GuestThread* T, uint64_t Nr, uint64_t Ns);
 
 // Times a scope when the log is on.
 class Scope {

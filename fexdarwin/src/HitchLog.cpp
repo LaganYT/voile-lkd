@@ -22,6 +22,7 @@ extern "C" {
 #include <sys/resource.h>
 #include <sys/time.h>
 #include <unistd.h>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -144,6 +145,7 @@ public:
       int32_t Tid;
       char Comm[16];
       uint64_t Cpu, Sys, SysNs, Jit;
+      std::string Calls; // the thread's system calls that took it the most time
     };
     struct SysRow {
       unsigned Nr;
@@ -155,9 +157,25 @@ public:
     for (const auto& [Tid, Now] : Last.Threads) {
       const auto It = Prev.Threads.find(Tid);
       const ThreadSample Was = It == Prev.Threads.end() ? ThreadSample {} : It->second;
-      ThreadRow R {Tid, {}, Now.Cpu - Was.Cpu, Now.Sys - Was.Sys, Now.SysNs - Was.SysNs, Now.Jit - Was.Jit};
+      ThreadRow R {Tid, {}, Now.Cpu - Was.Cpu, Now.Sys - Was.Sys, Now.SysNs - Was.SysNs, Now.Jit - Was.Jit, {}};
       memcpy(R.Comm, Now.Comm, sizeof R.Comm);
-      Rows.push_back(R);
+      if (!Now.PerNr.empty()) {
+        std::vector<std::pair<uint64_t, unsigned>> ByNs;
+        for (unsigned Nr = 0; Nr < LKD_NR_TABLE_SIZE; ++Nr) {
+          const uint64_t Ns = Now.PerNr[LKD_NR_TABLE_SIZE + Nr] - (Was.PerNr.empty() ? 0 : Was.PerNr[LKD_NR_TABLE_SIZE + Nr]);
+          if (Ns) ByNs.emplace_back(Ns, Nr);
+        }
+        std::sort(ByNs.begin(), ByNs.end(), [](const auto& A, const auto& B) { return A.first > B.first; });
+        for (size_t I = 0; I < ByNs.size() && I < 5; ++I) {
+          const unsigned Nr = ByNs[I].second;
+          const uint64_t N = Now.PerNr[Nr] - (Was.PerNr.empty() ? 0 : Was.PerNr[Nr]);
+          const char* Name = lkd_syscall_name(Nr);
+          char B[96];
+          snprintf(B, sizeof B, "%s%s %llu/%.1f ms", I ? ", " : "", Name ? Name : "?", (unsigned long long)N, Ms(ByNs[I].first));
+          R.Calls += B;
+        }
+      }
+      Rows.push_back(std::move(R));
     }
     std::sort(Rows.begin(), Rows.end(), [](const ThreadRow& A, const ThreadRow& B) { return A.Cpu > B.Cpu; });
     std::vector<SysRow> Calls;
@@ -184,8 +202,9 @@ public:
             (unsigned long long)(Last.T.InvalCount - Prev.T.InvalCount), Ms(Last.T.InvalNs - Prev.T.InvalNs));
     for (size_t I = 0; I < Rows.size() && I < 10; ++I) {
       if (!Rows[I].Cpu && !Rows[I].Sys) break;
-      fprintf(stderr, "[fexdarwin] pid %d   thread %d \"%s\": cpu %.1f ms, syscalls %llu (%.1f ms inside), JIT %.1f ms\n", Pid,
-              Rows[I].Tid, Rows[I].Comm, Ms(Rows[I].Cpu), (unsigned long long)Rows[I].Sys, Ms(Rows[I].SysNs), Ms(Rows[I].Jit));
+      fprintf(stderr, "[fexdarwin] pid %d   thread %d \"%s\": cpu %.1f ms, syscalls %llu (%.1f ms inside), JIT %.1f ms; %s\n", Pid,
+              Rows[I].Tid, Rows[I].Comm, Ms(Rows[I].Cpu), (unsigned long long)Rows[I].Sys, Ms(Rows[I].SysNs), Ms(Rows[I].Jit),
+              Rows[I].Calls.c_str());
     }
     for (size_t I = 0; I < Calls.size() && I < 12; ++I) {
       const char* Name = lkd_syscall_name(Calls[I].Nr);
@@ -198,6 +217,7 @@ private:
   struct ThreadSample {
     char Comm[16];
     uint64_t Cpu, Sys, SysNs, Jit;
+    std::vector<uint64_t> PerNr; // counts then nanoseconds per number, empty before the thread's first call
   };
   struct Snapshot {
     uint64_t Mono {}, User {}, Kernel {};
@@ -241,16 +261,30 @@ private:
         }
         Ts.Sys = T->SysCount.load(std::memory_order_relaxed);
         Ts.SysNs = T->SysNs.load(std::memory_order_relaxed);
+        if (const std::atomic<uint64_t>* Per = T->SysNr.load(std::memory_order_acquire)) {
+          Ts.PerNr.resize(2 * LKD_NR_TABLE_SIZE);
+          for (unsigned I = 0; I < 2 * LKD_NR_TABLE_SIZE; ++I) Ts.PerNr[I] = Per[I].load(std::memory_order_relaxed);
+        }
         if (auto* St = T->State ? T->State->ThreadStats : nullptr; St && Hz)
           Ts.Jit = static_cast<uint64_t>(static_cast<double>(std::atomic_ref<uint64_t>(St->AccumulatedJITTime).load(std::memory_order_relaxed)) *
                                          1e9 / static_cast<double>(Hz));
-        S.Threads[T->Tid] = Ts;
+        S.Threads[T->Tid] = std::move(Ts);
       }
     }
     if (!S.MainComm[0]) memcpy(S.MainComm, Last.MainComm, sizeof S.MainComm); // at exit the list is empty
     Last = std::move(S);
   }
 };
+
+// Watcher ticks (50 ms) per profile: FEXDARWIN_PROFILE_MS, 10 s by default, at least one tick.
+unsigned ProfileTicks() {
+  static const unsigned Ticks = [] {
+    const char* E = getenv("FEXDARWIN_PROFILE_MS");
+    const long Ms = E && *E ? atol(E) : 10000;
+    return static_cast<unsigned>(Ms < 50 ? 1 : Ms / 50);
+  }();
+  return Ticks;
+}
 
 // The profile of this process (ProfPid): a forked child inherits its parent's and replaces it in its own watcher.
 std::mutex ProfLock;
@@ -270,9 +304,9 @@ void* Watch(void*) {
   for (unsigned Tick = 1;; ++Tick) {
     usleep(50000);
     const Totals Now = Read();
-    if (Tick % 200 == 0 && ProfileEnabled()) {
+    if (ProfileEnabled() && Tick % ProfileTicks() == 0) {
       std::lock_guard<std::mutex> Lk(ProfLock);
-      Prof->Log("10 s");
+      Prof->Log("period");
     }
     if (!Hitches) {
       Prev = Now;
@@ -361,10 +395,19 @@ void NoteSmcPage(uint64_t GuestAddress) {
   }
 }
 
-void NoteSyscall(uint64_t Nr, uint64_t Ns) {
+void NoteSyscall(GuestThread* T, uint64_t Nr, uint64_t Ns) {
+  T->SysCount.fetch_add(1, std::memory_order_relaxed);
+  T->SysNs.fetch_add(Ns, std::memory_order_relaxed);
   if (Nr >= LKD_NR_TABLE_SIZE) return;
   SysCount[Nr].fetch_add(1, std::memory_order_relaxed);
   SysNs[Nr].fetch_add(Ns, std::memory_order_relaxed);
+  std::atomic<uint64_t>* Per = T->SysNr.load(std::memory_order_acquire);
+  if (!Per) {
+    Per = new std::atomic<uint64_t>[2 * LKD_NR_TABLE_SIZE]();
+    T->SysNr.store(Per, std::memory_order_release);
+  }
+  Per[Nr].fetch_add(1, std::memory_order_relaxed);
+  Per[LKD_NR_TABLE_SIZE + Nr].fetch_add(Ns, std::memory_order_relaxed);
 }
 
 void Add(Kind K, uint64_t Ns, uint64_t Bytes) {

@@ -49,7 +49,11 @@ struct GuestThread {
   std::atomic<bool> KickRequested {false};
   std::atomic<bool> InLkd {false};         // inside lkd_syscall/lkd_signal_next: LKD checks pending signals on its way out
   uint64_t FaultErr {}, FaultTrapNo {}, FaultAddr {}; // sigcontext err/trapno/cr2 of the pending synchronous fault
-  std::atomic<uint64_t> SysCount {0}, SysNs {0};      // profile (FEXDARWIN_PROFILE): system calls of this thread
+  // Profile (FEXDARWIN_PROFILE): system calls of this thread, in all and per number. SysNr holds the counts of each
+  // number, then their nanoseconds inside LKD; the thread allocates it on its first profiled call.
+  std::atomic<uint64_t> SysCount {0}, SysNs {0};
+  std::atomic<std::atomic<uint64_t>*> SysNr {nullptr};
+  ~GuestThread() { delete[] SysNr.load(); }
 };
 
 // The guest thread attached to the calling host thread (null on host-only threads).
