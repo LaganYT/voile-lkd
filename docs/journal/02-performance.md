@@ -328,6 +328,37 @@ Ce qui reste avant la fenêtre :
 - le calcul pur du jeu (environ 2,2 s) ;
 - le démarrage de Wine et d'EAC (environ 3 s).
 
+## Requêtes à wineserver par type, et Free Play sans limite (22:03 à 22:18)
+
+Compteur de requêtes de wineserver (voile-wine, branche `wineserver-request-stats`, `WINESERVER_REQUEST_STATS`)
+et cadence débridée côté moteur (`NPT_WSD_PACING=off`, `NPT_PRESENT_QUEUE=0`), puis limite d'i/s du jeu au maximum.
+
+| Phase | Requêtes par seconde | Remarque |
+|---|---|---|
+| Chargement asynchrone (avant la fenêtre) | environ 45 000 : `event_op` 17 000, `close_handle` et `create_event` 8 000 chacune, `select` 6 000, `add_fd_completion` 5 000 | environ 6 allers-retours par lecture de fichier, tous sur le fil `AsyncIOSystem` |
+| Fermeture du jeu (15,7 s entre « AK Audio shut down » et « Object subsystem closed ») | environ 55 000 : `select` et `event_op` à parts égales | le fil principal réveille le fil de rendu environ 26 000 fois par seconde |
+| Free Play limité à 60 i/s | `event_op` environ 19 000, `select` environ 16 000 | |
+| Free Play débridé (environ 130 i/s) | `event_op` environ 41 000, `select` environ 8 000, `create_event` et `close_handle` environ 2 500 chacune | |
+
+Free Play débridé : environ 130 i/s (6 à 9 ms par image).
+- Fil de rendu : 82 % d'un cœur, dont environ 20 % en attente active.
+- Fil principal : 56 % de son temps bloqué dans des allers-retours avec wineserver (environ 33 000 par seconde,
+  environ 250 par image).
+- Serveur de rendu : décodeur à 52 %. GPU à 43 %.
+
+ntsync dans LKD rendrait les `event_op` et les `select` locaux. C'est la piste qui sert à la fois au chargement, à la
+fermeture et à la cadence au-delà de 60 i/s.
+
+**Incident EAC.** Avec ce wineserver instrumenté et son compteur actif, le montage du module EAC dans le jeu (« Wine
+module mapping ») a pris 1,4 s puis 2,4 s, au lieu de 0,5 s sur tous les autres lancements de la journée. Au second
+lancement, le jeu a démarré avant la fin du montage et s'est lancé sans EAC (`bAntiCheatEnabled=(False)`). Avec le
+wineserver d'origine, tout est revenu : 0,5 s et EAC actif.
+
+La cause n'est pas comprise. Ce compteur reste donc hors de `main`, et ne doit plus servir pendant un lancement
+protégé avant d'avoir été compris.
+
+Cet incident montre aussi une course : le jeu peut démarrer avant la fin du montage d'EAC quand celui-ci est lent.
+
 ## Mesures suivantes
 
 - **Appels système par thread et par type.** Le profil donne les totaux par thread et les types par processus, mais
