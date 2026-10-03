@@ -213,7 +213,10 @@ void lkd_sig_proc_exit(lkd_task *t)
      * guest processes in one host process; the engine runs one). */
     if (t->proc->host_pid == getpid()) {
         int left = sp ? atomic_fetch_sub(&g_nprocs, 1) - 1 : atomic_load(&g_nprocs);
-        if (left <= 0) lkd_famsvc_shutdown();
+        if (left <= 0) {
+            sig_ntsync_host_exit();
+            lkd_famsvc_shutdown();
+        }
     }
 }
 
@@ -288,6 +291,7 @@ void lkd_sig_fork_child(lkd_task *t)
     }
     g_fork_sp = NULL;
     g_fork_hand = NULL;
+    sig_ntsync_fork_child();
     sig_futex_fork_child();
     lkd_famsvc_fork_child();
 }

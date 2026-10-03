@@ -80,6 +80,24 @@ struct sig_task {
 #define SIG_WAKESET_MAX 512
 struct sig_wakeset { int n; int kick_self; lkd_task *t[SIG_WAKESET_MAX]; };
 
+/* ---- futex.c: shared sleepers and the robust spin lock, for ntsync.c ------------------------------
+ * A shared sleeper lives in the family's futex.shm: any process of the family can wake it by index, and
+ * signals to its task ring it. sig_shared_sleep returns 1 woken, 0 deadline (lkd_host_mono_ns domain,
+ * -1 none), -1 interrupted. The spin lock holds the holder's host pid and is taken over from a dead
+ * holder. */
+struct fx_sleeper;
+struct fx_sleeper *sig_shared_sleeper_get(lkd_task *t);   /* NULL: no family file or no free sleeper */
+uint32_t sig_shared_sleeper_index(struct fx_sleeper *s); /* 1-based */
+void sig_shared_sleeper_wake(uint32_t index);
+int sig_shared_sleep(lkd_task *t, struct fx_sleeper *s, int64_t deadline);
+void sig_shared_sleeper_put(struct fx_sleeper *s);
+void sig_spin_lock(_Atomic uint32_t *l);
+void sig_spin_unlock(_Atomic uint32_t *l);
+
+/* ---- ntsync.c --------------------------------------------------------------------------------- */
+void sig_ntsync_host_exit(void);  /* last guest process of this host process: release its ntsync slots */
+void sig_ntsync_fork_child(void);
+
 /* ---- state.c ---------------------------------------------------------------------------------- */
 struct lkd_sigproc *sig_proc(struct lkd_proc *p);       /* lazy, never NULL except ENOMEM (aborts) */
 struct lkd_sigproc *sig_proc_peek(const struct lkd_proc *p); /* NULL when not created yet, lock-free */

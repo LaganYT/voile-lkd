@@ -8,19 +8,22 @@
  * console (the host controlling terminal, when there is one). NOT supported: pseudo terminals.
  * /dev/ptmx exists with the Linux mode and numbers but opening it answers -ENODEV, the answer of a
  * kernel without a devpts driver; /dev/pts is an empty directory. The fs module's tty support covers host
- * terminals only (docs/status/procfs.md). /dev/shm is mounted by the fs module.
+ * terminals only (docs/status/procfs.md). /dev/shm is mounted by the fs module. /dev/ntsync (misc 10:126,
+ * drivers/misc/ntsync.c) is the sig module's (ntsync.h); it exists while lkd_ntsync_available().
  */
 #include <fcntl.h>
 #include <unistd.h>
 
+#include "ntsync.h"
 #include "procfs_priv.h"
 
-enum { D_NULL, D_ZERO, D_FULL, D_RANDOM, D_URANDOM, D_TTY, D_CONSOLE, D_PTMX, D_N };
+enum { D_NULL, D_ZERO, D_FULL, D_RANDOM, D_URANDOM, D_TTY, D_CONSOLE, D_PTMX, D_NTSYNC, D_N };
 struct dev { const char *name; uint16_t perm; uint8_t major, minor; };
 static const struct dev g_dev[D_N] = {
     [D_NULL] = { "null", 0666, 1, 3 }, [D_ZERO] = { "zero", 0666, 1, 5 }, [D_FULL] = { "full", 0666, 1, 7 },
     [D_RANDOM] = { "random", 0666, 1, 8 }, [D_URANDOM] = { "urandom", 0666, 1, 9 },
     [D_TTY] = { "tty", 0666, 5, 0 }, [D_CONSOLE] = { "console", 0600, 5, 1 }, [D_PTMX] = { "ptmx", 0666, 5, 2 },
+    [D_NTSYNC] = { "ntsync", 0666, 10, 126 },
 };
 struct dlnk { const char *name, *target; };
 static const struct dlnk g_lnk[] = {
@@ -44,6 +47,7 @@ int pf_dev_lookup(const char *name, struct pf_node *n)
     n->size = 0;
     for (int i = 0; i < D_N; i++) {
         if (strcmp(g_dev[i].name, name)) continue;
+        if (i == D_NTSYNC && !lkd_ntsync_available()) return -LX_ENOENT;
         n->kind = PK_DEVNODE;
         n->sub = i;
         n->mode = LX_S_IFCHR | g_dev[i].perm;
@@ -74,6 +78,7 @@ int pf_dev_lookup(const char *name, struct pf_node *n)
 
 int pf_dev_readdir(uint64_t i, char name[256], uint8_t *dt, uint64_t *ino)
 {
+    if (i >= D_NTSYNC && !lkd_ntsync_available()) i++; /* no /dev/ntsync: the entries after it move up */
     if (i >= N_ENT) return 0;
     if (i < D_N) { snprintf(name, 256, "%s", g_dev[i].name); *dt = LX_DT_CHR; }
     else if (i < (uint64_t)(D_N + N_LNK)) { snprintf(name, 256, "%s", g_lnk[i - D_N].name); *dt = LX_DT_LNK; }
@@ -211,11 +216,15 @@ static int open_host_tty(const struct pf_node *n, uint32_t fl, lkd_fdobj **out)
 
 int pf_dev_open(lkd_task *t, const struct pf_node *n, uint32_t fl, lkd_fdobj **out)
 {
-    (void)t;
     if (fl & LX_O_DIRECTORY) return -LX_ENOTDIR;
     switch (n->sub) {
     case D_TTY: case D_CONSOLE: return open_host_tty(n, fl, out);
     case D_PTMX: return -LX_ENODEV;   /* no pseudo terminal support */
+    case D_NTSYNC: {
+        int rc = lkd_ntsync_open_device(t, fl, out);
+        if (rc == 0) (*out)->ino = n->ino;
+        return rc;
+    }
     }
     lkd_fdobj *o = lkd_fdobj_new(LKD_FD_DEV, n->sub == D_ZERO ? &g_zero_ops : &g_dev_ops, -1,
                                  (fl & (LX_O_ACCMODE | LX_O_NONBLOCK | LX_O_APPEND | LX_O_PATH)) | LX_O_LARGEFILE,

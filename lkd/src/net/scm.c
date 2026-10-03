@@ -19,6 +19,7 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+#include "ntsync.h"
 #include "net_priv.h"
 #include "lkd_fs.h"
 
@@ -89,6 +90,8 @@ static int wrap_shm(int fd, lkd_fdobj **out)
 
 int net_scm_export(lkd_fdobj *o, int *hfds, int cap)
 {
+    int nt = lkd_ntsync_export(o, hfds, cap);   /* an ntsync device or object travels as its anchor */
+    if (nt) return nt;
     if (o->ops == &net_eventfd_ops) {
         if (cap < 3) return -LX_ETOOMANYREFS;
         return net_eventfd_export(o, hfds);
@@ -143,6 +146,10 @@ int net_scm_import(const int *hfds, int n, lkd_fdobj **objs, int cap)
         int e = -LX_EBADF;
         struct stat st;
         if (k >= cap || fstat(fd, &st) < 0) { close(fd); continue; }
+        if (S_ISFIFO(st.st_mode) && lkd_ntsync_import(fd, &o) == 1) {
+            objs[k++] = o;
+            continue;
+        }
         if (S_ISSOCK(st.st_mode)) {
             e = import_socket(fd, &o);
         } else if ((st.st_mode & S_IFMT) == 0) {

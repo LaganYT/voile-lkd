@@ -282,6 +282,37 @@ static void sleeper_wake(struct fx_sleeper *s, uint32_t value)
     else lkd_task_wake((lkd_task *)(uintptr_t)s->task);
 }
 
+/* ---- shared sleepers for other waits of the family (ntsync.c) ---------------------------------- */
+
+static int fx_sleep(lkd_task *t, struct fx_sleeper *s, int64_t deadline);
+
+struct fx_sleeper *sig_shared_sleeper_get(lkd_task *t)
+{
+    if (!shm_tab()) return NULL;
+    struct fx_sleeper *s = shm_sleeper_alloc();
+    if (!s) return NULL;
+    s->shared = 1;
+    s->host_pid = (int32_t)mypid();
+    s->tid = t->tid;
+    s->task = (uint64_t)(uintptr_t)t;
+    return s;
+}
+
+uint32_t sig_shared_sleeper_index(struct fx_sleeper *s) { return (uint32_t)(s - g_shm->s) + 1; }
+
+void sig_shared_sleeper_wake(uint32_t index)
+{
+    if (!index || index > FX_SHM_SLEEPERS || !shm_tab()) return;
+    sleeper_wake(&g_shm->s[index - 1], 1);
+}
+
+int sig_shared_sleep(lkd_task *t, struct fx_sleeper *s, int64_t deadline) { return fx_sleep(t, s, deadline); }
+
+void sig_shared_sleeper_put(struct fx_sleeper *s) { atomic_store(&s->used, 0); }
+
+void sig_spin_lock(_Atomic uint32_t *l) { spin_lock(l); }
+void sig_spin_unlock(_Atomic uint32_t *l) { spin_unlock(l); }
+
 void sig_ring_futex(lkd_task *t)
 {
     struct sig_task *st = __atomic_load_n((struct sig_task **)&t->pending.queue, __ATOMIC_ACQUIRE);
