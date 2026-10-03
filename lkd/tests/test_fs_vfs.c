@@ -402,6 +402,54 @@ LT_TEST(case_insensitivity_gap)
     else LT_ERRNO(gstat("/ETC/HOSTS", &st), LX_ENOENT);
 }
 
+/* Deep paths take the resolution shortcut (one host fstatat with AT_SYMLINK_NOFOLLOW_ANY for all the components
+ * before the last); every case where it must step aside gives the same answers as the walk. */
+LT_TEST(deep_paths)
+{
+    put_dir(ROOT, "d1"); put_dir(ROOT, "d1/d2"); put_dir(ROOT, "d1/d2/d3"); put_dir(ROOT, "d1/d2/d3/d4");
+    put_dir(ROOT, "d1/d2/d3/d4/d5");
+    put_file(ROOT, "d1/d2/d3/d4/d5/file", "deep\n");
+    put_link(ROOT, "d1/d2/rl", "d3");
+    put_link(ROOT, "d1/d2/al", "/d1/d2/d3");
+    put_link(ROOT, "d1/d2/esc", "/etc");
+    put_link(ROOT, "d1/d2/d3/d4/d5/fl", "file");
+    put_link(ROOT, "d1/d2/d3/d4/d5/dang", "nowhere");
+    struct lx_stat st;
+    LT_EQ(gstat("/d1/d2/d3/d4/d5/file", &st), 0);
+    LT_EQ(st.st_size, 5);
+    LT_EQ(gstat("d1/d2/d3/d4/d5/file", &st), 0);               /* relative to the cwd (/) */
+    LT_ERRNO(gstat("/d1/d2/zz/d4/d5/file", &st), LX_ENOENT);   /* missing directory on the way */
+    LT_ERRNO(gstat("/d1/d2/d3/d4/d5/missing", &st), LX_ENOENT);
+    LT_ERRNO(gstat("/d1/d2/d3/d4/d5/file/x", &st), LX_ENOTDIR);
+    LT_ERRNO(gstat("/d1/d2/d3/d4/d5/file/", &st), LX_ENOTDIR);
+    LT_EQ(gstat("/d1/d2/rl/d4/d5/file", &st), 0);              /* relative link on the way */
+    LT_EQ(st.st_size, 5);
+    LT_EQ(gstat("/d1/d2/al/d4/d5/file", &st), 0);              /* absolute link: guest namespace */
+    LT_EQ(gstat("/d1/d2/esc/hosts", &st), 0);                  /* the guest's /etc, not the host's */
+    LT_EQ(st.st_size, 20);
+    LT_EQ(gstat("/d1/d2/d3/d4/d5/fl", &st), 0);                /* final link followed */
+    LT_EQ(st.st_mode & LX_S_IFMT, LX_S_IFREG);
+    LT_EQ(glstat("/d1/d2/d3/d4/d5/fl", &st), 0);               /* ... or not */
+    LT_EQ(st.st_mode & LX_S_IFMT, LX_S_IFLNK);
+    LT_ERRNO(gstat("/d1/d2/d3/d4/d5/dang", &st), LX_ENOENT);
+    LT_EQ(glstat("/d1/d2/d3/d4/d5/dang", &st), 0);
+    LT_EQ(gstat("/d1/d2/d3/../d3/d4/d5/file", &st), 0);
+    LT_EQ(gstat("/d1/d2/rl/../d3/d4/d5/file", &st), 0);        /* ".." after a link: parent of its target */
+    LT_EQ(gstat("/d1/d2/d3/d4/d5/.", &st), 0);
+    LT_EQ(st.st_mode & LX_S_IFMT, LX_S_IFDIR);
+    LT_EQ(gstat("/d1/d2/d3/d4/d5/..", &st), 0);
+    LT_EQ(st.st_mode & LX_S_IFMT, LX_S_IFDIR);
+    int64_t fd = gopen("/d1/d2/d3/new.txt", LX_O_CREAT | LX_O_WRONLY);
+    LT_CHECK(fd >= 0);
+    SC(T, close, fd);
+    LT_EQ(gstat("/d1/d2/d3/new.txt", &st), 0);
+    LT_ERRNO(gopen("/d1/zz/d3/new.txt", LX_O_CREAT | LX_O_WRONLY), LX_ENOENT);
+    LT_EQ(lkd_vfs_mount_bind("/d1/d2/d3/mnt", BIND, 0), 0);  /* a mount on the way */
+    LT_EQ(gstat("/d1/d2/d3/mnt/data.txt", &st), 0);
+    LT_EQ(st.st_size, 6);
+    LT_EQ(gstat("/d1/d2/al/mnt/data.txt", &st), 0);
+}
+
 int main(void)
 {
     make_tmpdir(ROOT, sizeof ROOT, "root");
@@ -421,6 +469,7 @@ int main(void)
     LT_RUN(chroot_rules);
     LT_RUN(openat2_resolve);
     LT_RUN(case_insensitivity_gap);
+    LT_RUN(deep_paths);
     rm_rf(ROOT);
     rm_rf(BIND);
     return lt_finish();
