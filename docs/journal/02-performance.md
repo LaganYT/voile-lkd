@@ -478,6 +478,13 @@ des couches supposait un tel écran.
   `SwitchToThread`. `thread_rusage` de LKD continue de renvoyer 0 changement de contexte, donc `SwitchToThread`
   répond toujours FALSE sous le moteur.
 
+### Mesures retirées
+
+À la demande de l'utilisateur, aucune mesure ne tourne plus à chaque image dans wsd. Le détecteur de frame back
+(copie GPU de 64 pixels et deux lectures CPU de 64 pixels par image) est retiré : le correctif de Neptune `22d94ed`
+a supprimé ce qu'il cherchait. Pour s'en servir à nouveau, il faut reprendre wsd à `ff71f31`. La sonde de latence
+reste, car elle ne fait rien tant qu'aucune entrée `wsdctl` ne l'active.
+
 ## Mesures suivantes
 
 - **Appels système par thread et par type.** Le profil donne les totaux par thread et les types par processus, mais
