@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include "DarwinSignalDelegator.h"
 #include "DarwinSyscallHandler.h"
+#include "HitchLog.h"
 #include "Host.h"
 
 #include <FEXCore/Core/X86Enums.h>
@@ -23,6 +24,7 @@ GuestThread* CreateGuestThread(GuestThread* Parent) {
   const CPUState* Init = Parent ? &Parent->State->CurrentFrame->State : nullptr;
   T->State = G->CTX->CreateThread(Init);
   T->State->FrontendPtr = T;
+  HitchLog::Attach(T->State);
   auto* Frame = T->State->CurrentFrame;
 
   // Call-ret shadow stack with a guard page on each side (the guard size is one *host* page: mprotect granularity).

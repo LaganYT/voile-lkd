@@ -36,6 +36,7 @@ add_executable(fexdarwin-run
   src/DarwinSyscallHandler.cpp
   src/GuestSignals.cpp
   src/GuestThread.cpp
+  src/HitchLog.cpp
   src/LkdGlue.cpp
   src/LkdLoader.cpp
   src/LkdShim.c)

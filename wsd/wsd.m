@@ -170,6 +170,10 @@ static void probe_frame(WsdBuffer *b, uint64_t client_ns, uint64_t rx_ns) {
 @property int redisplayTries;
 @property uint64_t pendingSerial, pendingClientNs, pendingReceivedNs;
 @property uint32_t replaced, nPresented, nZero;
+/* frame-back detector: GPU fingerprints of the last frames drawn on this plane, newest first, and the free small
+ * buffers the GPU copies the probe pixels into (one is taken per frame in flight) */
+@property uint64_t *gpuHash, *gpuSerial;
+@property(strong) NSMutableArray<id<MTLBuffer>> *freeProbes;
 /* present interval statistics (logged every 120 shown frames per plane) */
 @property uint64_t statLastNs, statSumNs, statMaxNs, statMinNs;
 @property uint32_t statCount;
@@ -439,6 +443,32 @@ static CAMetalLayer *make_metal_layer(void) {
   if (self.overlay) [self.overlay tickPlane];
 }
 
+/* Called in drawing order with the fingerprint of the probe pixels the GPU copied (tickPlane); logs a frame back with
+ * the wall-clock time. */
+- (void)checkGpuFrameBack:(uint64_t)h serial:(uint64_t)serial buffer:(uint32_t)bufferId {
+  enum { N = 6 };
+  if (!self.gpuHash) {
+    self.gpuHash = calloc(N, sizeof(uint64_t));
+    self.gpuSerial = calloc(N, sizeof(uint64_t));
+  }
+  uint64_t *H = self.gpuHash, *S = self.gpuSerial;
+  if (H[0] && h != H[0])
+    for (int k = 1; k < N; k++)
+      if (H[k] == h) {
+        struct timeval tv;
+        gettimeofday(&tv, NULL);
+        struct tm lt;
+        localtime_r(&tv.tv_sec, &lt);
+        LOG("window %u %s: frame back at %02d:%02d:%02d.%03d: serial %llu (buffer %#x) was drawn with the pixels of serial "
+            "%llu (%d frames earlier)", self.windowId, self.isOverlay ? "overlay" : "base", lt.tm_hour, lt.tm_min,
+            lt.tm_sec, (int)(tv.tv_usec / 1000), (unsigned long long)serial, bufferId, (unsigned long long)S[k], k + 1);
+        break;
+      }
+  memmove(H + 1, H, (N - 1) * sizeof *H);
+  memmove(S + 1, S, (N - 1) * sizeof *S);
+  H[0] = h; S[0] = serial;
+}
+
 - (void)tickPlane {
   WsdBuffer *b = self.pendingBuffer;
   BOOL redisplay = NO;
@@ -462,6 +492,24 @@ static CAMetalLayer *make_metal_layer(void) {
   [enc setFragmentTexture:b.texture atIndex:0];
   [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
   [enc endEncoding];
+  /* Frame-back detector: the GPU copies 64 pixels (an 8x8 grid) of the buffer it just sampled, in the same command
+   * buffer, so the check sees what was drawn. A frame drawn with the pixels of one shown 2 to 5 frames earlier, while
+   * the frame just before differs, is the picture going back (a swapchain image shown before its new content). */
+  id<MTLBuffer> probe = nil;
+  if (!redisplay && b.texture && b.width >= 8 && b.height >= 8) {
+    if (!self.freeProbes) self.freeProbes = [NSMutableArray array];
+    probe = self.freeProbes.lastObject;
+    if (probe) [self.freeProbes removeLastObject];
+    else probe = [g_dev newBufferWithLength:64 * 4 options:MTLResourceStorageModeShared];
+    id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+    for (uint32_t y = 0; y < 8; y++)
+      for (uint32_t x = 0; x < 8; x++)
+        [blit copyFromTexture:b.texture sourceSlice:0 sourceLevel:0
+                 sourceOrigin:MTLOriginMake(b.width * (2 * x + 1) / 16, b.height * (2 * y + 1) / 16, 0)
+                   sourceSize:MTLSizeMake(1, 1, 1) toBuffer:probe destinationOffset:(y * 8 + x) * 4
+       destinationBytesPerRow:4 destinationBytesPerImage:4];
+    [blit endEncoding];
+  }
 
   struct wsd_ev_presented ev = {self.windowId, b.bufferId, self.pendingSerial, self.pendingClientNs,
                                 self.pendingReceivedNs, tick_ns, 0, self.replaced, 0};
@@ -477,6 +525,14 @@ static CAMetalLayer *make_metal_layer(void) {
       if (e2.presented_ns && !redisplay) {
         if (sw.statLastNs && e2.presented_ns > sw.statLastNs) {
           uint64_t d = e2.presented_ns - sw.statLastNs;
+          if (d > 50000000) { /* a hitch: wall-clock time, to match against profiles of the game */
+            struct timeval tv;
+            gettimeofday(&tv, NULL);
+            struct tm lt;
+            localtime_r(&tv.tv_sec, &lt);
+            LOG("window %u %s: frame held %.1f ms, shown at %02d:%02d:%02d.%03d", sw.windowId,
+                sw.isOverlay ? "overlay" : "base", d / 1e6, lt.tm_hour, lt.tm_min, lt.tm_sec, (int)(tv.tv_usec / 1000));
+          }
           sw.statSumNs += d;
           if (d > sw.statMaxNs) sw.statMaxNs = d;
           if (!sw.statMinNs || d < sw.statMinNs) sw.statMinNs = d;
@@ -501,6 +557,17 @@ static CAMetalLayer *make_metal_layer(void) {
   if (!redisplay)
     [cb addCompletedHandler:^(id<MTLCommandBuffer> c) {
       dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf releaseBuffer:b serial:serial shown:YES]; });
+    }];
+  if (probe)
+    [cb addCompletedHandler:^(id<MTLCommandBuffer> c) {
+      uint64_t h = 1469598103934665603ull;
+      const uint32_t *px = probe.contents;
+      for (int i = 0; i < 64; i++) h = (h ^ px[i]) * 1099511628211ull;
+      dispatch_async(dispatch_get_main_queue(), ^{
+        WsdWindow *sw = weakSelf;
+        [sw.freeProbes addObject:probe];
+        [sw checkGpuFrameBack:h serial:serial buffer:b.bufferId];
+      });
     }];
   [cb commit];
 }

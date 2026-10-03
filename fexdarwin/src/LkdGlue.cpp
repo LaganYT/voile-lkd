@@ -3,6 +3,7 @@
 // Enabled with FEXDARWIN_LKD=1; the older built-in syscall table of DarwinSyscallHandler stays the default until LKD
 // can run the same witnesses.
 #include "DarwinSignalDelegator.h"
+#include "HitchLog.h"
 #include "GuestSignalAbi.h"
 #include "Host.h"
 #include "LkdGlue.h"
@@ -438,6 +439,7 @@ void InvalidateCode(uint64_t Gva, uint64_t Len) {
   // [any] in the LKD contract: also called from LKD's own host threads (the mm service thread that performs a tracer's
   // POKE). Without a guest thread, FEX's deferred-signal guard falls back to masking host signals.
   GuestThread* T = CurrentGuestThread;
+  HitchLog::Scope Timed(HitchLog::Kind::Invalidate, Len);
   G->Signals->InvalidateGuestCodeRange(T ? T->State : nullptr, Gva, Len);
 }
 

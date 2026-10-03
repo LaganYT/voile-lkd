@@ -27,6 +27,8 @@
 #include <unistd.h>
 #include <mach/mach.h>
 #include <mach/mach_vm.h>
+#include <mach-o/dyld.h>
+#include <fstream>
 #include <vector>
 
 namespace {
@@ -95,6 +97,34 @@ struct Args {
   std::vector<std::string> GuestArgv;
   std::string Cwd = "/"; // --cwd: guest working directory of the first process (LKD mode)
 };
+
+// Development overrides without changing the launcher: fexdarwin.env next to the executable. "NAME=VALUE" sets a host
+// variable for this process and every guest process it forks (FEXDARWIN_DUMP_DIR, LKD_TRACE...) unless it is set
+// already; "guest NAME=VALUE" sets or replaces a variable of the guest environment. # starts a comment.
+void LoadEnvFile(Args& A) {
+  char Exe[PATH_MAX];
+  uint32_t Size = sizeof Exe;
+  if (_NSGetExecutablePath(Exe, &Size) != 0) return;
+  std::string Path = Exe;
+  Path = Path.substr(0, Path.rfind('/') + 1) + "fexdarwin.env";
+  std::ifstream F(Path);
+  for (std::string Line; std::getline(F, Line);) {
+    if (Line.empty() || Line[0] == '#') continue;
+    bool Guest = Line.rfind("guest ", 0) == 0;
+    if (Guest) Line = Line.substr(6);
+    size_t Eq = Line.find('=');
+    if (Eq == std::string::npos || Eq == 0) continue;
+    std::string Name = Line.substr(0, Eq + 1);
+    if (!Guest) {
+      setenv(Line.substr(0, Eq).c_str(), Line.substr(Eq + 1).c_str(), 0);
+      continue;
+    }
+    bool Replaced = false;
+    for (auto& E : A.Env)
+      if (E.rfind(Name, 0) == 0) { E = Line; Replaced = true; }
+    if (!Replaced) A.Env.push_back(Line);
+  }
+}
 
 uint64_t PushString(uint64_t& Cur, const std::string& S) {
   Cur -= S.size() + 1;
@@ -317,6 +347,8 @@ int main(int argc, char** argv) {
     else if (!S.empty() && S[0] == '-') { fprintf(stderr, "unknown option %s\n", S.c_str()); Usage(); return 2; }
     else break;
   }
+  LoadEnvFile(A);
+  Opt.Trace = Opt.Trace || (getenv("FEXDARWIN_TRACE") && strcmp(getenv("FEXDARWIN_TRACE"), "0") != 0);
   if (Opt.SmcMode != "none" && Opt.SmcMode != "mtrack" && Opt.SmcMode != "full") {
     fprintf(stderr, "--smc must be none, mtrack or full\n");
     return 2;

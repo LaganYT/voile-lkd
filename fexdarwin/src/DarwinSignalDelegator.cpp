@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "DarwinSignalDelegator.h"
+#include "HitchLog.h"
 #include "LkdGlue.h"
 #include <FEXCore/Utils/GuestBase.h>
 #include "DarwinContext.h"
@@ -188,6 +189,8 @@ bool DarwinSignalDelegator::HandleSmcWrite(GuestThread* T, int Sig, siginfo_t* I
     if (!((Ec == 0x24 || Ec == 0x25) && ((Esr >> 6) & 1))) return false;
     // mm drops the translations of the host page through ops->invalidate_code, restores the write permission and tells
     // us to retry the store.
+    HitchLog::Scope Timed(HitchLog::Kind::SmcFault);
+    HitchLog::NoteSmcPage(Fault);
     if (fexdarwin_lkd_code_write_fault(Fault) != 1) return false;
     PageBase = Fault & ~(FEXCore::Utils::FEX_HOST_PAGE_SIZE - 1);
   } else {
