@@ -292,6 +292,42 @@ Deux causes se partagent donc environ 15 s des 23,7 s :
 Le reste est du calcul (2,2 s, au niveau de Rosetta d'après `winbench`), plus `PreInit` (2,3 s) et les autres
 étapes.
 
+## Après les correctifs de fichiers (21:56)
+
+Correctifs : LKD `daa6775` (dossiers ouverts en `O_SEARCH`, 1,6 µs au lieu de 7,3 µs sur macOS), LKD `fcf56ae`
+(`getxattr` consulte d'abord `listxattr`, 1 µs au lieu de 5,6 µs pour un attribut absent), voile-wine `c803a925`
+(une seule vérification de casse par recherche, au lieu de deux avec la recherche `nom?` des points d'analyse).
+
+| Mesure | 17:22 | 21:19 (casse) | 21:56 |
+|---|---|---|---|
+| `PreInit` | 2,3 s | 2,6 s | 1,6 s |
+| `LoadScriptPackages` | 9,9 s | 9,5 s | 8,7 s |
+| `InitOnlineSubsystem` | 12,4 s | 8,7 s | 6,3 s |
+| **Total jusqu'au menu (`Launch.log`)** | **27,7 s** | **23,5 s** | **19,2 s** |
+| Icône du Dock → fenêtre du jeu | | environ 17,8 s | environ 14,9 s |
+| Icône du Dock → menu | | environ 27,5 s | environ 22,2 s |
+
+Bancs d'essai (`missbench`, `enumbench`) :
+- fichier absent : 87–101 µs → 57–64 µs ;
+- entrée de dossier listée : 24,2 µs → 7,4 µs (Wine macOS : 4,4 µs).
+
+Ce que le jeu cherche en vain (échantillon d'un chemin sur 200, `FEXDARWIN_PROFILE_MISSES`) : environ 240 000 fois
+les mêmes fichiers de localisation (`TAGame.INT`, `ProductSlots.INT`…), dans des dossiers de surcharge qui
+n'existent pas :
+- `Documents/My Games/Rocket League/Engine/Localization/INT` ;
+- `…/ProjectX/Localization/INT` ;
+- `Engine/Localization` dans le dossier du jeu.
+
+Un essai écarté : résoudre en un seul `fstatat(AT_SYMLINK_NOFOLLOW_ANY)` les dossiers d'un chemin sans lien
+symbolique. Le gain n'était que de 0 à 9 %, parce que les chemins de Wine passent par `dosdevices/c:` ou
+`dosdevices/z:` puis par un changement de montage. Le test `deep_paths` est resté.
+
+Ce qui reste avant la fenêtre :
+- le chargement asynchrone, limité par les allers-retours avec wineserver (environ 4 s, à compter par type de
+  requête) ;
+- le calcul pur du jeu (environ 2,2 s) ;
+- le démarrage de Wine et d'EAC (environ 3 s).
+
 ## Mesures suivantes
 
 - **Appels système par thread et par type.** Le profil donne les totaux par thread et les types par processus, mais
