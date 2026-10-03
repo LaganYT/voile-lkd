@@ -1,5 +1,6 @@
 /* wsdctl: test-only host tool for wsd. Sends synthetic input (WSD_DEBUG_INPUT) to the largest visible window.
- * Usage: wsdctl SOCKET key KEYCODE down|up | wsdctl SOCKET tap KEYCODE | wsdctl SOCKET click X Y */
+ * Usage: wsdctl SOCKET key KEYCODE down|up | tap KEYCODE | click X Y | move COUNT HZ
+ *        | window move X Y | window size W H | window minimize|restore|zoom|close|quit  (screen points) */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,7 +20,11 @@ int main(int argc, char **argv)
     struct wsd_hello hello = {WSD_PROTOCOL_VERSION, (uint32_t)getpid()};
     struct wsd_debug_input in = {0};
     int fd;
-    if (argc < 4) { fprintf(stderr, "usage: wsdctl SOCKET key CODE down|up | tap CODE | click X Y | move COUNT HZ\n"); return 2; }
+    if (argc < 4) {
+        fprintf(stderr, "usage: wsdctl SOCKET key CODE down|up | tap CODE | click X Y | move COUNT HZ | "
+                        "window move X Y | window size W H | window minimize|restore|zoom|close|quit\n");
+        return 2;
+    }
     strncpy(a.sun_path, argv[1], sizeof(a.sun_path) - 1);
     fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (connect(fd, (struct sockaddr *)&a, sizeof(a))) { perror("connect"); return 1; }
@@ -41,6 +46,12 @@ int main(int argc, char **argv)
             sendmsg_wsd(fd, WSD_DEBUG_INPUT, &in, sizeof(in));
             usleep(1000000 / (hz > 0 ? hz : 1000));
         }
+    } else if (!strcmp(argv[2], "window")) {
+        static const char *const actions[] = {"", "move", "size", "minimize", "restore", "zoom", "close", "quit"};
+        in.kind = 4;
+        for (uint32_t i = 1; i < sizeof(actions) / sizeof(*actions); i++) if (!strcmp(argv[3], actions[i])) in.a = i;
+        if (argc >= 6) { in.b = atoi(argv[4]); in.reserved = atoi(argv[5]); }
+        sendmsg_wsd(fd, WSD_DEBUG_INPUT, &in, sizeof(in));
     } else if (!strcmp(argv[2], "click") && argc >= 5) {
         in.kind = 2; in.a = atoi(argv[3]); in.b = atoi(argv[4]);
         sendmsg_wsd(fd, WSD_DEBUG_INPUT, &in, sizeof(in));

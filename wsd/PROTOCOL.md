@@ -31,8 +31,8 @@ rules that the header cannot express.
 
 | type | name | payload | effect |
 | --- | --- | --- | --- |
-| 1 | HELLO | `wsd_hello` | replies `EV_HELLO` with main-screen size in pixels, max refresh, backing scale |
-| 2 | WINDOW_CREATE | `wsd_window_create` + UTF-8 title | NSWindow + layer-backed view with a `CAMetalLayer`; size in pixels; ids are client-chosen, max 16 |
+| 1 | HELLO | `wsd_hello` | replies `EV_HELLO` with main-screen size in pixels, max refresh, backing scale, and the work area (main screen without the menu bar and the Dock; zero from older servers) |
+| 2 | WINDOW_CREATE | `wsd_window_create` + UTF-8 title | NSWindow + layer-backed view with an opaque black `CAMetalLayer`; size in pixels; ids are client-chosen, max 16. `WSD_STYLE_TITLED` gives the macOS title bar (with close, minimize and zoom buttons as `CLOSABLE`, `MINIATURIZABLE`, `RESIZABLE` ask), `BORDERLESS` none |
 | 3 | WINDOW_DESTROY | `wsd_window` | releases a pending frame, restores relative mode, closes |
 | 4 | WINDOW_SHOW | `wsd_window_flag` | 1: activate app, `makeKeyAndOrderFront`, then one `EV_RESIZE`; 0: `orderOut` |
 | 5 | WINDOW_FULLSCREEN | `wsd_window_flag` | 1: borderless, level `NSMainMenuWindowLevel+1`, frame = screen frame, Dock and menu bar hidden; 0: restore. Exactly one `EV_RESIZE` per transition |
@@ -47,8 +47,11 @@ rules that the header cannot express.
 | 14 | PING | `wsd_ping` | `EV_PONG` with server time |
 | 15 | DEBUG_INJECT | `wsd_window_flag` | test only: synthetic NSEvents fed to the window (1: key, modifiers, buttons, motion, wheel; 2: raw delta; 3: motion outside the clip rect). Every resulting event carries flag bit 31 (`WSD_KEY_SYNTHETIC`) |
 | 16 | QUIT | none | server exits |
+| 25 | WINDOW_SET_STYLE | `wsd_window_flag` | value = `WSD_STYLE_*` frame (TOPMOST ignored); the content keeps its place on screen. While fullscreen, applied when fullscreen ends |
+| 26 | WINDOW_MINIMIZE | `wsd_window_flag` | 1: into the Dock (`miniaturize:`; a window without a minimize button is ordered out), 0: back |
+| 27 | APP_ICON | `wsd_app_icon` + 1 fd | BGRA8 pixels with straight alpha, at most 1024x1024, read once (`pread`): the application icon of the server (Dock, Cmd-Tab) |
 | 18 | PRESENT_REGION | `wsd_present_region` | like PRESENT, but into an overlay plane (a `CAMetalLayer` sublayer) placed at x,y width x height window pixels; used for a D3D swapchain in the client area while the base plane keeps the GDI surface (frame, title). 0x0 removes the plane. `EV_PRESENTED`/`EV_RELEASE` as for PRESENT |
-| 17 | WINDOW_SET_FRAME | `wsd_window_frame` | moves (`WSD_FRAME_MOVE`: content top-left at x,y screen pixels, origin top-left of the main screen) and/or resizes (`WSD_FRAME_SIZE`: content width x height pixels, 1..16384). A size change sends exactly one `EV_RESIZE`. Rejected with `-EINVAL` while fullscreen |
+| 17 | WINDOW_SET_FRAME | `wsd_window_frame` | moves (`WSD_FRAME_MOVE`: content top-left at x,y screen pixels, origin top-left of the main screen) and/or resizes (`WSD_FRAME_SIZE`: content width x height pixels, 1..16384). A size change sends exactly one `EV_RESIZE`. When AppKit places the window elsewhere (a title bar is kept below the menu bar and on screen), an `EV_FRAME` gives the frame it got. Rejected with `-EINVAL` while fullscreen |
 
 ## Events (server to client)
 
@@ -67,9 +70,18 @@ rules that the header cannot express.
 | 111 | EV_RELEASE | `wsd_ev_release`: the GPU finished reading the buffer for that serial (`shown=1`) or it was replaced unshown (`shown=0`); the client may write it again |
 | 112 | EV_PONG | `wsd_ping` |
 | 113 | EV_ERROR | `wsd_ev_error` |
+| 114 | EV_FRAME | `wsd_window_frame` (MOVE and SIZE set): the user moved or resized the window, or AppKit placed it (content, screen pixels). Not sent for WINDOW_SET_FRAME that lands where asked, nor while fullscreen or in the Dock |
+| 115 | EV_MINIMIZE | `wsd_window_flag`: 1 the window went into the Dock, 0 it came back (also after WINDOW_MINIMIZE: the client ignores a state it already has) |
+| 116 | EV_ZOOM | `wsd_window`: the zoom (green) button; the client maximizes or restores and sets the frame itself |
 
 All times are `clock_gettime_nsec_np(CLOCK_UPTIME_RAW)` nanoseconds, the same timebase as
 `mach_absolute_time` and `CACurrentMediaTime`.
+
+## Application
+
+SailOver starts wsd from a bundle named after the game (`CFBundleName`), so the menu bar, the Dock and Cmd-Tab show
+the game's name; APP_ICON gives its icon. The application menu has Hide and Quit. Quit (Cmd-Q, the Dock) sends
+`EV_CLOSE` to every window instead of ending the server under a running game; with no window it ends the server.
 
 ## Redisplay
 

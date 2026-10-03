@@ -47,6 +47,9 @@ enum {
   WSD_AUDIO_STOP = 22,     /* wsd_audio_stream: pause, unread frames stay in the ring */
   WSD_AUDIO_RESET = 23,    /* wsd_audio_stream: (stopped) drop unread frames: read position = write position */
   WSD_AUDIO_CLOSE = 24,    /* wsd_audio_stream */
+  WSD_WINDOW_SET_STYLE = 25, /* wsd_window_flag (value: WSD_STYLE_*): the content keeps its place on screen */
+  WSD_WINDOW_MINIMIZE = 26, /* wsd_window_flag (value: 1 into the Dock, 0 back) */
+  WSD_APP_ICON = 27,       /* wsd_app_icon + 1 fd: the Dock and Cmd-Tab icon */
 };
 
 /* server -> client */
@@ -64,6 +67,9 @@ enum {
   WSD_EV_RELEASE = 111,    /* wsd_ev_release (server no longer reads the buffer) */
   WSD_EV_PONG = 112,       /* wsd_ping */
   WSD_EV_ERROR = 113,      /* wsd_ev_error */
+  WSD_EV_FRAME = 114,      /* wsd_window_frame: the user moved or resized the window (MOVE and SIZE flags set) */
+  WSD_EV_MINIMIZE = 115,   /* wsd_window_flag (value: 1 the user sent the window to the Dock, 0 it came back) */
+  WSD_EV_ZOOM = 116,       /* wsd_window: the user pressed the zoom (green) button */
 };
 
 enum { WSD_FMT_BGRA8 = 1, WSD_FMT_RGBA8 = 2 };
@@ -86,6 +92,8 @@ struct wsd_hello_reply {
   uint32_t display_width_px, display_height_px; /* main screen, backing pixels */
   uint32_t max_refresh_hz;                      /* NSScreen.maximumFramesPerSecond */
   uint32_t backing_scale_x1000;
+  int32_t work_x, work_y;                       /* main screen without the menu bar and the Dock, backing pixels, */
+  uint32_t work_width, work_height;             /* origin top-left of the main screen (0x0 from older servers) */
 };
 struct wsd_window_create {
   uint32_t window_id; /* chosen by the client, nonzero */
@@ -124,10 +132,16 @@ struct wsd_present {
 };
 struct wsd_ping { uint64_t token; uint64_t time_ns; };
 struct wsd_debug_input {
-  uint32_t kind;   /* 1 key (a = mac keycode, b = 1 down / 0 up), 2 left click at window pixels (a, b) */
+  uint32_t kind;   /* 1 key (a = mac keycode, b = 1 down / 0 up), 2 left click at window pixels (a, b),
+                      3 raw motion, 4 window action as the user does it (a = WSD_DEBUG_WINDOW_*) */
   uint32_t a, b;
-  uint32_t reserved;
+  uint32_t reserved; /* kind 4: second coordinate */
 };
+/* wsd_debug_input kind 4: MOVE puts the frame's top-left at (b, reserved) screen points, SIZE gives the content
+ * b x reserved points; the others act like the title bar buttons, the application menu and the Dock */
+enum { WSD_DEBUG_WINDOW_MOVE = 1, WSD_DEBUG_WINDOW_SIZE = 2, WSD_DEBUG_WINDOW_MINIMIZE = 3,
+       WSD_DEBUG_WINDOW_RESTORE = 4, WSD_DEBUG_WINDOW_ZOOM = 5, WSD_DEBUG_WINDOW_CLOSE = 6,
+       WSD_DEBUG_APP_QUIT = 7 /* Quit from the application menu or the Dock */ };
 struct wsd_present_region {
   struct wsd_present present;
   int32_t x, y;            /* overlay rectangle in window pixels, top-left origin */
@@ -156,6 +170,13 @@ struct wsd_audio_open {
   uint64_t size;          /* 64 + ring_frames * frame_bytes */
 };
 struct wsd_audio_stream { uint32_t stream_id; uint32_t reserved; };
+struct wsd_app_icon {
+  uint32_t width, height;  /* at most 1024x1024 */
+  uint32_t stride;         /* bytes per row */
+  uint32_t reserved;
+  uint64_t offset;         /* byte offset of the first row within the fd */
+  uint64_t size;           /* stride * height; pixels are BGRA8 with straight (not premultiplied) alpha */
+};
 
 struct wsd_ev_key {
   uint32_t window_id;
@@ -197,7 +218,7 @@ struct wsd_ev_error { uint32_t request_type; int32_t code; };
 #define WSD_ASSERT_SIZE(t, n)
 #endif
 WSD_ASSERT_SIZE(wsd_hdr, 8);
-WSD_ASSERT_SIZE(wsd_hello_reply, 24);
+WSD_ASSERT_SIZE(wsd_hello_reply, 40);
 WSD_ASSERT_SIZE(wsd_window_create, 16);
 WSD_ASSERT_SIZE(wsd_cursor_clip, 24);
 WSD_ASSERT_SIZE(wsd_buffer_attach, 40);
@@ -207,6 +228,7 @@ WSD_ASSERT_SIZE(wsd_present_region, 40);
 WSD_ASSERT_SIZE(wsd_debug_input, 16);
 WSD_ASSERT_SIZE(wsd_audio_ring, 64);
 WSD_ASSERT_SIZE(wsd_audio_open, 40);
+WSD_ASSERT_SIZE(wsd_app_icon, 32);
 WSD_ASSERT_SIZE(wsd_ev_key, 24);
 WSD_ASSERT_SIZE(wsd_ev_button, 32);
 WSD_ASSERT_SIZE(wsd_ev_motion, 24);

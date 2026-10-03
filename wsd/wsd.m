@@ -267,6 +267,18 @@ static double backing_scale(NSWindow *w) {
   return s > 0 ? s : 1.0;
 }
 
+/* WSD_STYLE_* to an AppKit style mask: a titled window gets the macOS title bar and buttons; borderless otherwise
+ * (the client draws any frame itself). */
+static NSWindowStyleMask style_mask(uint32_t style) {
+  NSWindowStyleMask mask = 0;
+  if (style & WSD_STYLE_BORDERLESS) return NSWindowStyleMaskBorderless;
+  if (style & WSD_STYLE_TITLED) mask |= NSWindowStyleMaskTitled;
+  if (style & WSD_STYLE_CLOSABLE) mask |= NSWindowStyleMaskClosable;
+  if (style & WSD_STYLE_RESIZABLE) mask |= NSWindowStyleMaskResizable;
+  if (style & WSD_STYLE_MINIATURIZABLE) mask |= NSWindowStyleMaskMiniaturizable;
+  return mask;
+}
+
 /* ---------------------------------------------------------------- view and input */
 
 static CAMetalLayer *make_metal_layer(void) {
@@ -278,6 +290,10 @@ static CAMetalLayer *make_metal_layer(void) {
   CGColorSpaceRef srgb = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
   l.colorspace = srgb;
   CGColorSpaceRelease(srgb);
+  /* Opaque and black: Win32 GDI never writes alpha (its pixels have alpha 0), and a window shown before its first
+   * frame must not let the window's grey background through (2026-10-03: Rocket League's startup window). */
+  l.opaque = YES;
+  l.backgroundColor = CGColorGetConstantColor(kCGColorBlack);
   l.framebufferOnly = YES;
   l.maximumDrawableCount = 3;
   l.displaySyncEnabled = YES;
@@ -420,7 +436,61 @@ static CAMetalLayer *make_metal_layer(void) {
   [self sendEvent:WSD_EV_FOCUS payload:&f len:sizeof(f) extra:nil];
 }
 - (void)windowDidResize:(NSNotification *)n {
-  if (!self.transitioning) [self sendResize]; /* one RESIZE per fullscreen transition */
+  if (self.transitioning) return; /* one RESIZE per fullscreen transition */
+  [self sendResize];
+  [self sendFrame];
+}
+/* The user (or AppKit, e.g. moving it off a removed screen) moved or resized the window: the client follows. */
+- (void)sendFrame {
+  if (self.transitioning || self.fullscreen || self.window.miniaturized) return;
+  NSWindow *w = self.window;
+  double s = backing_scale(w);
+  NSRect content = [w contentRectForFrameRect:w.frame];
+  double top = NSMaxY(NSScreen.screens.firstObject.frame);
+  struct wsd_window_frame f = {self.windowId, WSD_FRAME_MOVE | WSD_FRAME_SIZE, (int32_t)lround(content.origin.x * s),
+                               (int32_t)lround((top - NSMaxY(content)) * s), (uint32_t)lround(content.size.width * s),
+                               (uint32_t)lround(content.size.height * s)};
+  [self sendEvent:WSD_EV_FRAME payload:&f len:sizeof(f) extra:nil];
+}
+- (void)windowDidMove:(NSNotification *)n {
+  [self sendFrame];
+}
+/* Also sent after WINDOW_MINIMIZE (the animation ends later): the client ignores a state it already has. */
+- (void)windowDidMiniaturize:(NSNotification *)n {
+  struct wsd_window_flag f = {self.windowId, 1};
+  [self sendEvent:WSD_EV_MINIMIZE payload:&f len:sizeof(f) extra:nil];
+}
+- (void)windowDidDeminiaturize:(NSNotification *)n {
+  struct wsd_window_flag f = {self.windowId, 0};
+  [self sendEvent:WSD_EV_MINIMIZE payload:&f len:sizeof(f) extra:nil];
+}
+/* The client maximizes and restores the window itself (Win32 SC_MAXIMIZE) and then sets its frame. */
+- (BOOL)windowShouldZoom:(NSWindow *)window toFrame:(NSRect)frame {
+  struct wsd_window w = {self.windowId};
+  [self sendEvent:WSD_EV_ZOOM payload:&w len:sizeof(w) extra:nil];
+  return NO;
+}
+- (void)setStyle:(uint32_t)style {
+  NSWindowStyleMask mask = style_mask(style);
+  NSWindow *w = self.window;
+  if (self.fullscreen) { self.savedStyle = mask; return; } /* applied when fullscreen ends */
+  if (w.styleMask == mask) return;
+  NSRect content = [w contentRectForFrameRect:w.frame];
+  self.transitioning = YES;
+  w.styleMask = mask;
+  [w setFrame:[w frameRectForContentRect:content] display:YES];
+  [w makeFirstResponder:self.view];
+  self.transitioning = NO;
+  LOG("window %u style 0x%x", self.windowId, style);
+}
+- (void)minimize:(BOOL)on {
+  NSWindow *w = self.window;
+  if (on && !w.miniaturized) {
+    if (w.styleMask & NSWindowStyleMaskMiniaturizable) [w miniaturize:nil];
+    else [w orderOut:nil];
+  } else if (!on && w.miniaturized) {
+    [w deminiaturize:nil];
+  }
 }
 - (void)logState:(const char *)when {
   NSWindow *w = self.window;
@@ -591,6 +661,12 @@ static CAMetalLayer *make_metal_layer(void) {
   self.transitioning = NO;
   LOG("window %u frame px (%d,%d %ux%u) flags 0x%x", self.windowId, f->x, f->y, f->width, f->height, f->flags);
   if (resized) [self sendResize];
+  /* AppKit keeps a title bar below the menu bar and inside the screen (a Win32 caption is shorter than the macOS
+   * title bar, e.g. a maximized window): the client takes the frame the window really got. */
+  NSRect got = [w contentRectForFrameRect:w.frame];
+  if (fabs(got.origin.x - content.origin.x) > 0.5 || fabs(got.origin.y - content.origin.y) > 0.5 ||
+      fabs(got.size.width - content.size.width) > 0.5 || fabs(got.size.height - content.size.height) > 0.5)
+    [self sendFrame];
 }
 
 - (void)setFullscreenMode:(BOOL)on {
@@ -760,14 +836,7 @@ static CAMetalLayer *make_metal_layer(void) {
     [self error:WSD_WINDOW_CREATE code:-EINVAL];
     return;
   }
-  NSWindowStyleMask style = 0;
-  if (c->style & WSD_STYLE_BORDERLESS) style = NSWindowStyleMaskBorderless;
-  else {
-    if (c->style & WSD_STYLE_TITLED) style |= NSWindowStyleMaskTitled;
-    if (c->style & WSD_STYLE_CLOSABLE) style |= NSWindowStyleMaskClosable;
-    if (c->style & WSD_STYLE_RESIZABLE) style |= NSWindowStyleMaskResizable;
-    if (c->style & WSD_STYLE_MINIATURIZABLE) style |= NSWindowStyleMaskMiniaturizable;
-  }
+  NSWindowStyleMask style = style_mask(c->style);
   double s = backing_scale(nil);
   NSRect r = NSMakeRect(120, 120, c->width_px / s, c->height_px / s);
   WsdWindow *w = [WsdWindow new];
@@ -775,6 +844,10 @@ static CAMetalLayer *make_metal_layer(void) {
   w.client = self;
   w.window = [[WsdNSWindow alloc] initWithContentRect:r styleMask:style backing:NSBackingStoreBuffered defer:NO];
   w.window.releasedWhenClosed = NO;
+  w.window.backgroundColor = NSColor.blackColor;
+  /* the zoom button maximizes through the client (WSD_EV_ZOOM); wsd's own fullscreen is WINDOW_FULLSCREEN */
+  w.window.collectionBehavior = NSWindowCollectionBehaviorFullScreenNone;
+  w.window.tabbingMode = NSWindowTabbingModeDisallowed;
   w.window.title = title;
   w.window.acceptsMouseMovedEvents = YES;
   if (c->style & WSD_STYLE_TOPMOST) w.window.level = NSFloatingWindowLevel;
@@ -859,6 +932,35 @@ static CAMetalLayer *make_metal_layer(void) {
   LOG("client %d: audio stream %u: format %u, %u Hz, %u channels, ring %u frames", self.pid, o->stream_id, o->format,
       o->rate, o->channels, o->ring_frames);
 }
+/* The Dock and Cmd-Tab icon of the whole server (one game per wsd): the client's program icon. */
+- (void)appIcon:(const struct wsd_app_icon *)a {
+  if (!self.fdQueue.count) { [self error:WSD_APP_ICON code:-EBADF]; return; }
+  int fd = self.fdQueue.firstObject.intValue;
+  [self.fdQueue removeObjectAtIndex:0];
+  struct stat st;
+  if (!a->width || !a->height || a->width > 1024 || a->height > 1024 || a->stride < a->width * 4 ||
+      a->size < (uint64_t)a->stride * a->height || fstat(fd, &st) || (uint64_t)st.st_size < a->offset + a->size) {
+    close(fd);
+    [self error:WSD_APP_ICON code:-EINVAL];
+    return;
+  }
+  NSMutableData *pixels = [NSMutableData dataWithLength:(NSUInteger)a->size];
+  ssize_t got = pread(fd, pixels.mutableBytes, (size_t)a->size, (off_t)a->offset);
+  close(fd);
+  if (got != (ssize_t)a->size) { [self error:WSD_APP_ICON code:-EIO]; return; }
+  CGDataProviderRef provider = CGDataProviderCreateWithCFData((__bridge CFDataRef)pixels);
+  CGColorSpaceRef srgb = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+  CGImageRef image = CGImageCreate(a->width, a->height, 8, 32, a->stride, srgb,
+                                   kCGBitmapByteOrder32Little | kCGImageAlphaFirst, provider, NULL, false,
+                                   kCGRenderingIntentDefault);
+  CGColorSpaceRelease(srgb);
+  CGDataProviderRelease(provider);
+  if (!image) { [self error:WSD_APP_ICON code:-EINVAL]; return; }
+  NSApp.applicationIconImage = [[NSImage alloc] initWithCGImage:image size:NSZeroSize];
+  CGImageRelease(image);
+  LOG("client %d: application icon %ux%u", self.pid, a->width, a->height);
+}
+
 - (void)attachBuffer:(const struct wsd_buffer_attach *)a {
   if (!self.fdQueue.count) { [self error:WSD_BUFFER_ATTACH code:-EBADF]; return; }
   int fd = self.fdQueue.firstObject.intValue;
@@ -958,9 +1060,12 @@ static CAMetalLayer *make_metal_layer(void) {
     NEED(wsd_hello);
     NSScreen *sc = NSScreen.mainScreen;
     double s = backing_scale(nil);
+    NSRect vf = sc.visibleFrame; /* without the menu bar and the Dock */
     struct wsd_hello_reply r = {WSD_PROTOCOL_VERSION, getpid(), (uint32_t)lround(sc.frame.size.width * s),
                                 (uint32_t)lround(sc.frame.size.height * s), (uint32_t)sc.maximumFramesPerSecond,
-                                (uint32_t)lround(s * 1000)};
+                                (uint32_t)lround(s * 1000), (int32_t)lround((vf.origin.x - sc.frame.origin.x) * s),
+                                (int32_t)lround((NSMaxY(sc.frame) - NSMaxY(vf)) * s),
+                                (uint32_t)lround(vf.size.width * s), (uint32_t)lround(vf.size.height * s)};
     LOG("client %d hello version %u", self.pid, m->version);
     [self send:WSD_EV_HELLO payload:&r len:sizeof(r) extra:nil];
     break;
@@ -1096,10 +1201,35 @@ static CAMetalLayer *make_metal_layer(void) {
     for (WsdClient *c in g_clients)
       for (WsdWindow *w in c.windows.allValues) {
         NSSize sz = w.window.frame.size;
-        if (w.window.visible && sz.width * sz.height > area) { area = sz.width * sz.height; best = w; }
+        if ((w.window.visible || (m->kind == 4 && w.window.miniaturized)) && sz.width * sz.height > area) {
+          area = sz.width * sz.height;
+          best = w;
+        }
       }
     if (!best) { [self error:type code:-ENOENT]; break; }
     NSWindow *nw = best.window;
+    if (m->kind == 4) {
+      /* the AppKit calls behind the title bar, its buttons and the Dock: the delegate sees what a user does */
+      double top = NSMaxY(NSScreen.screens.firstObject.frame);
+      NSRect f = nw.frame;
+      switch (m->a) {
+      case WSD_DEBUG_WINDOW_MOVE: [nw setFrameTopLeftPoint:NSMakePoint(m->b, top - m->reserved)]; break;
+      case WSD_DEBUG_WINDOW_SIZE: {
+        NSRect c = [nw contentRectForFrameRect:f];
+        c.origin.y += c.size.height - m->reserved;
+        c.size = NSMakeSize(m->b, m->reserved);
+        [nw setFrame:[nw frameRectForContentRect:c] display:YES];
+        break;
+      }
+      case WSD_DEBUG_WINDOW_MINIMIZE: [nw performMiniaturize:nil]; break;
+      case WSD_DEBUG_WINDOW_RESTORE: [nw deminiaturize:nil]; break;
+      case WSD_DEBUG_WINDOW_ZOOM: [nw performZoom:nil]; break;
+      case WSD_DEBUG_WINDOW_CLOSE: [nw performClose:nil]; break;
+      case WSD_DEBUG_APP_QUIT: [NSApp terminate:nil]; break;
+      }
+      LOG("debug window action %u (%u, %u) -> window %u", m->a, m->b, m->reserved, best.windowId);
+      break;
+    }
     NSTimeInterval t = NSProcessInfo.processInfo.systemUptime;
     if (m->kind != 3 && (m->kind == 2 || m->b)) probe_arm(m->kind == 1 ? "key" : "click");
     g_injecting = YES;
@@ -1195,6 +1325,23 @@ static CAMetalLayer *make_metal_layer(void) {
     [w setFramePx:m];
     break;
   }
+  case WSD_WINDOW_SET_STYLE: {
+    NEED(wsd_window_flag);
+    WsdWindow *w = [self win:m->window_id req:type];
+    if (w) [w setStyle:m->value];
+    break;
+  }
+  case WSD_WINDOW_MINIMIZE: {
+    NEED(wsd_window_flag);
+    WsdWindow *w = [self win:m->window_id req:type];
+    if (w) [w minimize:m->value != 0];
+    break;
+  }
+  case WSD_APP_ICON: {
+    NEED(wsd_app_icon);
+    [self appIcon:m];
+    break;
+  }
   case WSD_QUIT:
     LOG("client %d asked the server to quit", self.pid);
     restore_input_state();
@@ -1242,6 +1389,42 @@ static CAMetalLayer *make_metal_layer(void) {
 @end
 
 /* ---------------------------------------------------------------- main */
+
+/* Quit (Cmd-Q, the Dock) asks the game to close its windows, as the close button does, instead of ending the server
+ * under a running game (which then lost its windows and input but kept running); whoever started the game ends the
+ * server after it. Without any window, Quit ends the server. */
+@interface WsdAppDelegate : NSObject <NSApplicationDelegate>
+@end
+@implementation WsdAppDelegate
+- (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)app {
+  NSUInteger asked = 0;
+  for (WsdClient *c in g_clients)
+    for (WsdWindow *w in c.windows.allValues) {
+      struct wsd_window m = {w.windowId};
+      [w sendEvent:WSD_EV_CLOSE payload:&m len:sizeof(m) extra:nil];
+      asked++;
+    }
+  if (!asked) return NSTerminateNow;
+  LOG("quit requested: asked %lu windows to close", (unsigned long)asked);
+  return NSTerminateCancel;
+}
+@end
+
+/* The application menu: the bundle's name (SailOver starts wsd from a bundle named after the game), Hide and Quit. */
+static void make_menu(void) {
+  NSString *name = NSBundle.mainBundle.infoDictionary[@"CFBundleName"] ?: NSProcessInfo.processInfo.processName;
+  BOOL fr = [NSLocale.preferredLanguages.firstObject hasPrefix:@"fr"];
+  NSMenu *bar = [NSMenu new], *menu = [[NSMenu alloc] initWithTitle:name];
+  NSMenuItem *item = [NSMenuItem new];
+  [menu addItemWithTitle:[(fr ? @"Masquer " : @"Hide ") stringByAppendingString:name] action:@selector(hide:)
+           keyEquivalent:@"h"];
+  [menu addItem:NSMenuItem.separatorItem];
+  [menu addItemWithTitle:[(fr ? @"Quitter " : @"Quit ") stringByAppendingString:name] action:@selector(terminate:)
+           keyEquivalent:@"q"];
+  item.submenu = menu;
+  [bar addItem:item];
+  NSApp.mainMenu = bar;
+}
 
 static int make_listener(const char *dir, char *path_out, size_t path_cap) {
   if (mkdir(dir, 0700) && errno != EEXIST) { LOG("mkdir %s: %s", dir, strerror(errno)); return -1; }
@@ -1344,7 +1527,11 @@ int main(int argc, char **argv) {
     }];
 
     [NSApplication sharedApplication];
+    static WsdAppDelegate *delegate;
+    delegate = [WsdAppDelegate new];
+    NSApp.delegate = delegate;
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+    make_menu();
     [NSApp finishLaunching];
 
     static dispatch_source_t acc;
