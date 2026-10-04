@@ -4,15 +4,18 @@
  * Wire format: sailover_input_protocol.h.
  *
  * One thread: poll() on the listening socket and the clients, then SDL's events. SDL reads the
- * gamepads' reports on its own and the loop collects their state, every millisecond while a gamepad
- * is open and every 50 ms otherwise (to notice new ones). A gamepad's state goes to the clients only
- * when it changed. The service ends on SIGTERM, SIGINT or SIGHUP, and when the program that started
- * it is gone.
+ * gamepads' reports when the loop asks it to, every millisecond while a gamepad is open (as SDL's own
+ * event wait does) and every 50 ms otherwise (to notice new ones). A gamepad's state follows SDL's
+ * events in their order: each press or release goes to the clients at once, with the axes as they
+ * were then, so a press and its release read in one pass both arrive; the axis moves of one pass go
+ * together. The service ends on SIGTERM, SIGINT or SIGHUP, and when the program that started it is
+ * gone.
  *
  * Usage: sailover-input --dir <private-dir>
  */
 #include <SDL3/SDL.h>
 #include <CoreFoundation/CoreFoundation.h>
+#include <IOKit/hidsystem/IOHIDLib.h>
 
 #include <errno.h>
 #include <fcntl.h>
@@ -48,7 +51,9 @@ struct gamepad {
   SDL_Gamepad *pad; /* NULL when the slot is free */
   uint32_t caps;
   struct si_ev_added added;
-  struct si_ev_state state;
+  struct si_ev_state sent;  /* the state the clients have */
+  struct si_ev_state state; /* the state after SDL's events so far */
+  int axes_moved;           /* state has axis moves not sent yet */
 };
 
 static struct client clients[MAX_CLIENTS];
@@ -56,6 +61,14 @@ static struct gamepad gamepads[MAX_GAMEPADS];
 static volatile sig_atomic_t quit_signal;
 
 static void on_signal(int sig) { quit_signal = sig; }
+
+static const char *access_name(IOHIDAccessType access) {
+  switch (access) {
+  case kIOHIDAccessTypeGranted: return "granted";
+  case kIOHIDAccessTypeDenied: return "denied";
+  default: return "not asked yet";
+  }
+}
 
 static int make_listener(const char *dir, char *path_out, size_t path_cap) {
   if (mkdir(dir, 0700) && errno != EEXIST) { LOG("mkdir %s: %s", dir, strerror(errno)); return -1; }
@@ -165,10 +178,11 @@ static void gamepad_added(SDL_JoystickID which) {
   snprintf(a->name, sizeof(a->name), "%s", name ? name : "Gamepad");
   snprintf(a->serial, sizeof(a->serial), "%s", serial ? serial : "");
   read_state(g, &g->state);
+  g->sent = g->state;
   LOG("gamepad %u added: %s %04x:%04x%s", which, a->name, a->vendor, a->product,
       g->caps & SI_CAP_RUMBLE ? ", rumble" : "");
   broadcast(SI_EV_ADDED, a, sizeof(*a));
-  broadcast(SI_EV_STATE, &g->state, sizeof(g->state));
+  broadcast(SI_EV_STATE, &g->sent, sizeof(g->sent));
 }
 
 static void gamepad_removed(SDL_JoystickID which) {
@@ -181,16 +195,40 @@ static void gamepad_removed(SDL_JoystickID which) {
   broadcast(SI_EV_REMOVED, &msg, sizeof(msg));
 }
 
-static void send_changed_states(void) {
-  for (int i = 0; i < MAX_GAMEPADS; i++) {
-    struct gamepad *g = &gamepads[i];
-    struct si_ev_state now;
-    if (!g->pad) continue;
-    read_state(g, &now);
-    if (!memcmp(&now, &g->state, sizeof(now))) continue;
-    g->state = now;
-    broadcast(SI_EV_STATE, &now, sizeof(now));
+/* Sends the gamepad's state when it differs from what the clients have. */
+static void send_state(struct gamepad *g) {
+  g->axes_moved = 0;
+  if (!memcmp(&g->state, &g->sent, sizeof(g->state))) return;
+  g->sent = g->state;
+  broadcast(SI_EV_STATE, &g->sent, sizeof(g->sent));
+}
+
+static void gamepad_event(const SDL_Event *ev) {
+  struct gamepad *g;
+  switch (ev->type) {
+  case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+  case SDL_EVENT_GAMEPAD_BUTTON_UP:
+    if (!(g = find_gamepad(ev->gbutton.which)) || ev->gbutton.button >= SI_BUTTON_COUNT) return;
+    if (ev->gbutton.down) g->state.buttons |= 1u << ev->gbutton.button;
+    else g->state.buttons &= ~(1u << ev->gbutton.button);
+    send_state(g);
+    break;
+  case SDL_EVENT_GAMEPAD_AXIS_MOTION:
+    if (!(g = find_gamepad(ev->gaxis.which)) || ev->gaxis.axis >= SI_AXIS_COUNT) return;
+    g->state.axes[ev->gaxis.axis] = ev->gaxis.value;
+    g->axes_moved = 1;
+    break;
+  case SDL_EVENT_GAMEPAD_REMAPPED:
+    if (!(g = find_gamepad(ev->gdevice.which))) return;
+    read_state(g, &g->state);
+    g->axes_moved = 1;
+    break;
   }
+}
+
+static void send_axis_moves(void) {
+  for (int i = 0; i < MAX_GAMEPADS; i++)
+    if (gamepads[i].pad && gamepads[i].axes_moved) send_state(&gamepads[i]);
 }
 
 static void handle_message(struct client *c, const struct si_hdr *hdr, const uint8_t *payload) {
@@ -207,7 +245,7 @@ static void handle_message(struct client *c, const struct si_hdr *hdr, const uin
     for (int i = 0; i < MAX_GAMEPADS && c->fd >= 0; i++) {
       if (!gamepads[i].pad) continue;
       client_send(c, SI_EV_ADDED, &gamepads[i].added, sizeof(gamepads[i].added));
-      if (c->fd >= 0) client_send(c, SI_EV_STATE, &gamepads[i].state, sizeof(gamepads[i].state));
+      if (c->fd >= 0) client_send(c, SI_EV_STATE, &gamepads[i].sent, sizeof(gamepads[i].sent));
     }
   } else if (hdr->type == SI_RUMBLE && hdr->len >= sizeof(struct si_rumble)) {
     const struct si_rumble *r = (const void *)payload;
@@ -287,9 +325,21 @@ int main(int argc, char **argv) {
    * Controller's driver is SDL's default on macOS; it is named so a later default cannot drop it. */
   SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
   SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_STEAM, "1");
+  /* Without Input Monitoring, macOS refuses SDL its own drivers for a gamepad that also shows itself as a
+   * keyboard or mouse, such as a Steam Controller: SDL then reads it through GameController.framework. With it,
+   * SDL's drivers open every gamepad they know, and the framework would only decode the same reports a second
+   * time in this process (a Steam Controller: 5 % of a core instead of 2.4 %). */
+  IOHIDAccessType monitoring = IOHIDCheckAccess(kIOHIDRequestTypeListenEvent);
+  int game_controller = monitoring != kIOHIDAccessTypeGranted;
+  if (!game_controller) SDL_SetHint(SDL_HINT_JOYSTICK_MFI, "0");
   if (!SDL_Init(SDL_INIT_GAMEPAD)) { LOG("SDL_Init: %s", SDL_GetError()); unlink(path); return 1; }
-  LOG("serving %s with SDL %d.%d.%d", path, SDL_VERSIONNUM_MAJOR(SDL_GetVersion()),
-      SDL_VERSIONNUM_MINOR(SDL_GetVersion()), SDL_VERSIONNUM_MICRO(SDL_GetVersion()));
+  /* Touchpads are not served. The joystick events must stay: SDL makes the gamepad events from them. */
+  SDL_SetEventEnabled(SDL_EVENT_GAMEPAD_TOUCHPAD_DOWN, false);
+  SDL_SetEventEnabled(SDL_EVENT_GAMEPAD_TOUCHPAD_MOTION, false);
+  SDL_SetEventEnabled(SDL_EVENT_GAMEPAD_TOUCHPAD_UP, false);
+  LOG("serving %s with SDL %d.%d.%d, Input Monitoring %s: %s", path, SDL_VERSIONNUM_MAJOR(SDL_GetVersion()),
+      SDL_VERSIONNUM_MINOR(SDL_GetVersion()), SDL_VERSIONNUM_MICRO(SDL_GetVersion()), access_name(monitoring),
+      game_controller ? "GameController.framework helps" : "SDL's drivers only");
 
   while (!quit_signal && getppid() == parent) {
     struct pollfd fds[1 + MAX_CLIENTS];
@@ -311,14 +361,15 @@ int main(int argc, char **argv) {
       if (fds[0].revents & POLLIN) accept_one(ls);
     }
 
-    /* GameController.framework, which SDL uses for some gamepads, reports on the main run loop. */
-    CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0, true);
+    /* GameController.framework reports on the main run loop. */
+    if (game_controller) CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0, true);
     SDL_Event ev;
     while (SDL_PollEvent(&ev)) {
       if (ev.type == SDL_EVENT_GAMEPAD_ADDED) gamepad_added(ev.gdevice.which);
       else if (ev.type == SDL_EVENT_GAMEPAD_REMOVED) gamepad_removed(ev.gdevice.which);
+      else gamepad_event(&ev);
     }
-    send_changed_states();
+    send_axis_moves();
   }
 
   if (quit_signal) LOG("signal %d, exiting", (int)quit_signal);
