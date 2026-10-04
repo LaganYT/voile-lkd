@@ -530,8 +530,8 @@ Ce qu'il faut faire au prochain incident :
 
 **Bug de wsd sur deux écrans.** Le `HELLO` de wsd donne la taille de `NSScreen.mainScreen`, l'écran de la fenêtre
 active. Avec l'écran du MacBook allumé, Rocket League a reçu 3024x1964 alors que sa fenêtre était sur l'écran à
-2560x1440, et son image dépassait. Correctif à faire : donner l'écran de la barre des menus, que wsd utilise déjà
-pour ses coordonnées.
+2560x1440, et son image dépassait. Corrigé dans `6a197ac` : wsd donne l'écran de la barre des menus, qui est
+déjà l'origine de ses coordonnées. Vérifié avec SailOver sur l'écran du MacBook : le jeu reçoit 2560x1440.
 
 ## Mesures suivantes
 
