@@ -485,6 +485,54 @@ des couches supposait un tel écran.
 a supprimé ce qu'il cherchait. Pour s'en servir à nouveau, il faut reprendre wsd à `ff71f31`. La sonde de latence
 reste, car elle ne fait rien tant qu'aucune entrée `wsdctl` ne l'active.
 
+## Release Voile v26.3.0-9 (4 octobre, 02:00)
+
+Contenu, pour le moteur Linux :
+- ntsync ;
+- les correctifs de fichiers ;
+- le correctif des frame backs ;
+- wsd sans son détecteur ;
+- FEXCore sans ses assertions (`e20b270`).
+
+voile-lkd et Neptune sont maintenant des sous-modules de Voile, comme voile-wine. `build-linux.sh` les compile ; les
+archives `lkd-*` et `neptune-*` ne servent plus.
+
+| Mesure | v26.3.0-9 |
+|---|---|
+| Archive | 400 Mo (406,5 Mo pour la -8) |
+| Rocket League, EAC | `bAntiCheatEnabled=(True)` sur tous les lancements qui ont atteint le jeu |
+| Programmes témoins x86-64, FEX sans assertions | mêmes codes de sortie qu'avec assertions (21 sur 21) |
+
+**Retrait des tables de symboles : essayé, puis abandonné.** Voile retirait déjà les infos de débogage ; il a
+essayé d'enlever aussi les tables de symboles :
+- PE : `--strip-all` ;
+- Mach-O : `strip -x` pour les bibliothèques, `strip` pour les programmes ;
+- ELF : `--strip-all`.
+
+Le gain était de 32 Mo. À la demande de l'utilisateur, Voile est revenu à `strip -S` et `--strip-debug`, comme pour
+la -8. Pendant les essais, deux incidents :
+- **Premier lancement après l'installation** (moteur sans symboles), donc avec mise à jour du préfixe par
+  wineboot :
+  - Rocket League s'est arrêté au démarrage sur des données corrompues (`Bad name index 359464960/2678:
+    Core.upk`) ;
+  - puis le lanceur d'EAC a planté (liste au pointeur `0xffffffffffffd8f0`).
+- **Lancement avec mise à jour du préfixe forcée** (`.update-timestamp`), même moteur : écran noir. Deux fils du
+  jeu tournaient à 99 %, et une section critique était bloquée depuis plus de 60 s.
+
+Les lancements suivants ont tous marché, sans les symboles comme avec : un moteur avec assertions, le moteur sans
+assertions non élagué, puis élagué, puis le paquet final. La cause n'est pas trouvée. Les deux incidents tombent sur
+une mise à jour du préfixe, quand beaucoup de processus Windows démarrent ensemble ; ntsync est une piste.
+
+Ce qu'il faut faire au prochain incident :
+- avoir `FEXDARWIN_DUMP_DIR` dans `engine/fexdarwin.env` ;
+- toucher `dump-request` pendant le blocage ;
+- pour reproduire, forcer la mise à jour (`printf '1\n' > <prefix>/.update-timestamp`).
+
+**Bug de wsd sur deux écrans.** Le `HELLO` de wsd donne la taille de `NSScreen.mainScreen`, l'écran de la fenêtre
+active. Avec l'écran du MacBook allumé, Rocket League a reçu 3024x1964 alors que sa fenêtre était sur l'écran à
+2560x1440, et son image dépassait. Correctif à faire : donner l'écran de la barre des menus, que wsd utilise déjà
+pour ses coordonnées.
+
 ## Mesures suivantes
 
 - **Appels système par thread et par type.** Le profil donne les totaux par thread et les types par processus, mais
