@@ -258,8 +258,15 @@ static OSStatus audio_render(void *ref, AudioUnitRenderActionFlags *flags, const
 - (void)close;
 @end
 
+/* The screen with the menu bar: the client's display, and the origin of the pixel coordinates wsd exchanges with it.
+ * NSScreen.mainScreen is the screen of the key window, which moves (2026-10-04: with SailOver on the MacBook's screen,
+ * Rocket League got 3024x1964 while its window was on a 2560x1440 one, and its picture overflowed). */
+static NSScreen *primary_screen(void) {
+  return NSScreen.screens.firstObject ?: NSScreen.mainScreen;
+}
+
 static double backing_scale(NSWindow *w) {
-  double s = w ? w.backingScaleFactor : NSScreen.mainScreen.backingScaleFactor;
+  double s = w ? w.backingScaleFactor : primary_screen().backingScaleFactor;
   return s > 0 ? s : 1.0;
 }
 
@@ -370,7 +377,7 @@ static CAMetalLayer *make_metal_layer(void) {
         double s = backing_scale(self.window);
         NSPoint vp = NSMakePoint(cx / s, self.bounds.size.height - cy / s);
         NSPoint sp = [self.window convertPointToScreen:[self convertPoint:vp toView:nil]];
-        CGFloat top = NSScreen.screens.firstObject.frame.size.height;
+        CGFloat top = primary_screen().frame.size.height;
         CGWarpMouseCursorPosition(CGPointMake(sp.x, top - sp.y));
         CGAssociateMouseAndMouseCursorPosition(true);
       }
@@ -442,7 +449,7 @@ static CAMetalLayer *make_metal_layer(void) {
   NSWindow *w = self.window;
   double s = backing_scale(w);
   NSRect content = [w contentRectForFrameRect:w.frame];
-  double top = NSMaxY(NSScreen.screens.firstObject.frame);
+  double top = NSMaxY(primary_screen().frame);
   struct wsd_window_frame f = {self.windowId, WSD_FRAME_MOVE | WSD_FRAME_SIZE, (int32_t)lround(content.origin.x * s),
                                (int32_t)lround((top - NSMaxY(content)) * s), (uint32_t)lround(content.size.width * s),
                                (uint32_t)lround(content.size.height * s)};
@@ -591,7 +598,7 @@ static CAMetalLayer *make_metal_layer(void) {
   NSRect content = [w contentRectForFrameRect:w.frame];
   if (f->flags & WSD_FRAME_SIZE) content.size = NSMakeSize(f->width / s, f->height / s);
   if (f->flags & WSD_FRAME_MOVE) {
-    double top = NSMaxY(NSScreen.screens.firstObject.frame);
+    double top = NSMaxY(primary_screen().frame);
     content.origin = NSMakePoint(f->x / s, top - f->y / s - content.size.height);
   } else {
     content.origin.y += [w contentRectForFrameRect:w.frame].size.height - content.size.height; /* keep the top edge */
@@ -620,7 +627,7 @@ static CAMetalLayer *make_metal_layer(void) {
     self.savedLevel = w.level;
     w.styleMask = NSWindowStyleMaskBorderless;
     w.level = NSMainMenuWindowLevel + 1;
-    [w setFrame:w.screen ? w.screen.frame : NSScreen.mainScreen.frame display:YES];
+    [w setFrame:w.screen ? w.screen.frame : primary_screen().frame display:YES];
     @try {
       NSApp.presentationOptions = NSApplicationPresentationHideDock | NSApplicationPresentationHideMenuBar;
     } @catch (NSException *ex) {
@@ -999,7 +1006,7 @@ static CAMetalLayer *make_metal_layer(void) {
   switch (type) {
   case WSD_HELLO: {
     NEED(wsd_hello);
-    NSScreen *sc = NSScreen.mainScreen;
+    NSScreen *sc = primary_screen();
     double s = backing_scale(nil);
     NSRect vf = sc.visibleFrame; /* without the menu bar and the Dock */
     struct wsd_hello_reply r = {WSD_PROTOCOL_VERSION, getpid(), (uint32_t)lround(sc.frame.size.width * s),
@@ -1151,7 +1158,7 @@ static CAMetalLayer *make_metal_layer(void) {
     NSWindow *nw = best.window;
     if (m->kind == 4) {
       /* the AppKit calls behind the title bar, its buttons and the Dock: the delegate sees what a user does */
-      double top = NSMaxY(NSScreen.screens.firstObject.frame);
+      double top = NSMaxY(primary_screen().frame);
       NSRect f = nw.frame;
       switch (m->a) {
       case WSD_DEBUG_WINDOW_MOVE: [nw setFrameTopLeftPoint:NSMakePoint(m->b, top - m->reserved)]; break;
@@ -1486,7 +1493,7 @@ int main(int argc, char **argv) {
     dispatch_resume(acc);
 
     LOG("listening on %s (pid %d, device %s, max %ld Hz)", path, getpid(), g_dev.name.UTF8String,
-        (long)NSScreen.mainScreen.maximumFramesPerSecond);
+        (long)primary_screen().maximumFramesPerSecond);
     [NSApp run];
   }
   return 0;

@@ -31,7 +31,7 @@ rules that the header cannot express.
 
 | type | name | payload | effect |
 | --- | --- | --- | --- |
-| 1 | HELLO | `wsd_hello` | replies `EV_HELLO` with main-screen size in pixels, max refresh, backing scale, and the work area (main screen without the menu bar and the Dock; zero from older servers) |
+| 1 | HELLO | `wsd_hello` | replies `EV_HELLO` with the size in pixels, max refresh and backing scale of the screen with the menu bar (the origin of window coordinates, whichever screen has the key window), and its work area (without the menu bar and the Dock; zero from older servers) |
 | 2 | WINDOW_CREATE | `wsd_window_create` + UTF-8 title | NSWindow + layer-backed view with an opaque black `CAMetalLayer`; size in pixels; ids are client-chosen, max 16. `WSD_STYLE_TITLED` gives the macOS title bar (with close, minimize and zoom buttons as `CLOSABLE`, `MINIATURIZABLE`, `RESIZABLE` ask), `BORDERLESS` none |
 | 3 | WINDOW_DESTROY | `wsd_window` | releases a pending frame, restores relative mode, closes |
 | 4 | WINDOW_SHOW | `wsd_window_flag` | 1: activate app, `makeKeyAndOrderFront`, then one `EV_RESIZE`; 0: `orderOut` |
@@ -51,7 +51,7 @@ rules that the header cannot express.
 | 26 | WINDOW_MINIMIZE | `wsd_window_flag` | 1: into the Dock (`miniaturize:`; a window without a minimize button is ordered out), 0: back |
 | 27 | APP_ICON | `wsd_app_icon` + 1 fd | BGRA8 pixels with straight alpha, at most 1024x1024, read once (`pread`): the application icon of the server (Dock, Cmd-Tab) |
 | 18 | PRESENT_REGION | `wsd_present_region` | like PRESENT, but into an overlay plane (a `CAMetalLayer` sublayer) placed at x,y width x height window pixels; used for a D3D swapchain in the client area while the base plane keeps the GDI surface (frame, title). 0x0 removes the plane. `EV_PRESENTED`/`EV_RELEASE` as for PRESENT |
-| 17 | WINDOW_SET_FRAME | `wsd_window_frame` | moves (`WSD_FRAME_MOVE`: content top-left at x,y screen pixels, origin top-left of the main screen) and/or resizes (`WSD_FRAME_SIZE`: content width x height pixels, 1..16384). A size change sends exactly one `EV_RESIZE`. When AppKit places the window elsewhere (a title bar is kept below the menu bar and on screen), an `EV_FRAME` gives the frame it got. Rejected with `-EINVAL` while fullscreen |
+| 17 | WINDOW_SET_FRAME | `wsd_window_frame` | moves (`WSD_FRAME_MOVE`: content top-left at x,y screen pixels, origin top-left of the screen with the menu bar) and/or resizes (`WSD_FRAME_SIZE`: content width x height pixels, 1..16384). A size change sends exactly one `EV_RESIZE`. When AppKit places the window elsewhere (a title bar is kept below the menu bar and on screen), an `EV_FRAME` gives the frame it got. Rejected with `-EINVAL` while fullscreen |
 
 ## Events (server to client)
 
