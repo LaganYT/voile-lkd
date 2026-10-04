@@ -9,3 +9,4 @@ target/
 tests/*/bin/
 tests/*/bin-exec/
 wsd/bin/
+input/bin/
