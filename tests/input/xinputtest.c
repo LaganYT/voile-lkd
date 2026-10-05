@@ -1,7 +1,7 @@
 /* Prints what XInput reports for 4 slots; A starts a rumble, releasing it stops it. Usage: xinputtest [seconds]
  * Build: x86_64-w64-mingw32-clang -O2 -o xinputtest.exe xinputtest.c -lxinput1_3 (llvm-mingw).
- * With fake-input.py serving the engine's /run/sailover, the run shows the scripted gamepad and the rumble
- * requests come back to the script; with sailover-input, it shows the Mac's gamepads. */
+ * With fake-input.py serving the engine's /run/obelisk, the run shows the scripted gamepad and the rumble
+ * requests come back to the script; with obelisk-input, it shows the Mac's gamepads. */
 #include <windows.h>
 #include <xinput.h>
 #include <stdio.h>

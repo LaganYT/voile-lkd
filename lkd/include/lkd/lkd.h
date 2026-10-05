@@ -172,7 +172,7 @@ typedef struct lkd_config {
     const char *guest_root;       /* host path of the guest root file system; NULL = "/" (tests) */
     uint32_t first_pid;           /* first pid of the family; 0 = 2. The first process gets this pid */
     uint32_t uid, gid;            /* identity presented to the guest; 0 = 1000 */
-    const char *hostname;         /* NULL = "sailover" */
+    const char *hostname;         /* NULL = "obelisk" */
     uint64_t guest_window_bytes;  /* size of the reserved guest window; 0 = 2^46, tests use less */
     uint64_t guest_window_base;   /* host address wanted for the window. 0 = test identity mode: lkd_guest_base
                                    * stays 0 and the first lkd_mm_create reserves a window (at most 4 GiB)

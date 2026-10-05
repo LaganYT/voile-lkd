@@ -15,7 +15,7 @@ static _Thread_local lkd_task *g_current;
 
 const lkd_config *lkd_config_get(void)
 {
-    if (!g_cfg.hostname) g_cfg.hostname = "sailover";
+    if (!g_cfg.hostname) g_cfg.hostname = "obelisk";
     if (!g_cfg.uid) g_cfg.uid = 1000;
     if (!g_cfg.gid) g_cfg.gid = 1000;
     if (!g_cfg.first_pid) g_cfg.first_pid = 2;

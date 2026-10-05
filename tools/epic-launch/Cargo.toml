@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
-# Private experiment tool: builds the Epic launch plan of an installed game from a staged session, with SailOver's own
+# Private experiment tool: builds the Epic launch plan of an installed game from a staged session, with Obelisk's own
 # epic-kit crate. It never prints a token, a code or an argument value.
 [dependencies]
 epic-kit = { path = "../../../../../crates/storefronts/epic-kit" }

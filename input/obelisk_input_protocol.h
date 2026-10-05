@@ -1,8 +1,8 @@
 /*
- * sailover_input_protocol.h - wire format of SailOver's input service (sailover-input).
+ * obelisk_input_protocol.h - wire format of Obelisk's input service (obelisk-input).
  *
  * The service reads the Mac's gamepads with SDL3 and serves them on <dir>/input.sock (AF_UNIX,
- * SOCK_STREAM, mode 0600, peers of another uid refused). Wine's SailOver bus (winebus.sys) is the
+ * SOCK_STREAM, mode 0600, peers of another uid refused). Wine's Obelisk bus (winebus.sys) is the
  * client: it sends HELLO, then receives HELLO, an ADDED and a STATE for every gamepad already
  * connected, and from then on ADDED, REMOVED and STATE as they happen. Several clients may be
  * connected; each receives every gamepad.
@@ -15,8 +15,8 @@
  * follow SDL3's SDL_GamepadButton and SDL_GamepadAxis order: sticks from -32768 to 32767 with Y
  * growing downwards, triggers from 0 to 32767.
  */
-#ifndef SAILOVER_INPUT_PROTOCOL_H
-#define SAILOVER_INPUT_PROTOCOL_H
+#ifndef OBELISK_INPUT_PROTOCOL_H
+#define OBELISK_INPUT_PROTOCOL_H
 
 #include <stdint.h>
 

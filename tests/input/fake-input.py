@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Stands in for sailover-input (../../input): serves one scripted gamepad on DIR/input.sock and logs what clients
-send. With DIR bound to the guest's /run/sailover, xinputtest.exe sees the gamepad through Wine's SailOver bus.
+"""Stands in for obelisk-input (../../input): serves one scripted gamepad on DIR/input.sock and logs what clients
+send. With DIR bound to the guest's /run/obelisk, xinputtest.exe sees the gamepad through Wine's Obelisk bus.
 
 Usage: fake-input.py DIR SECONDS. Every 3 s cycle: A down then up, left stick right, D-pad up, right trigger,
 guide; the 4th cycle unplugs and replugs the gamepad.

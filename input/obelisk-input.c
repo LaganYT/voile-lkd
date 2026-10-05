@@ -1,7 +1,7 @@
 /*
- * sailover-input.c - SailOver's input service: native arm64 process that reads the Mac's gamepads
- * with SDL3 and serves them to Wine's SailOver bus over <dir>/input.sock.
- * Wire format: sailover_input_protocol.h.
+ * obelisk-input.c - Obelisk's input service: native arm64 process that reads the Mac's gamepads
+ * with SDL3 and serves them to Wine's Obelisk bus over <dir>/input.sock.
+ * Wire format: obelisk_input_protocol.h.
  *
  * One thread: poll() on the listening socket and the clients, then SDL's events. SDL reads the
  * gamepads' reports when the loop asks it to, every millisecond while a gamepad is open (as SDL's own
@@ -11,7 +11,7 @@
  * together. The service ends on SIGTERM, SIGINT or SIGHUP, and when the program that started it is
  * gone.
  *
- * Usage: sailover-input --dir <private-dir>
+ * Usage: obelisk-input --dir <private-dir>
  */
 #include <SDL3/SDL.h>
 #include <CoreFoundation/CoreFoundation.h>
@@ -29,9 +29,9 @@
 #include <sys/un.h>
 #include <unistd.h>
 
-#include "sailover_input_protocol.h"
+#include "obelisk_input_protocol.h"
 
-#define LOG(...) do { fprintf(stderr, "sailover-input: " __VA_ARGS__); fputc('\n', stderr); } while (0)
+#define LOG(...) do { fprintf(stderr, "obelisk-input: " __VA_ARGS__); fputc('\n', stderr); } while (0)
 
 #define MAX_CLIENTS 8
 #define MAX_GAMEPADS 16
@@ -309,7 +309,7 @@ int main(int argc, char **argv) {
   const char *dir = NULL;
   for (int i = 1; i < argc; i++)
     if (!strcmp(argv[i], "--dir") && i + 1 < argc) dir = argv[++i];
-  if (!dir) { fprintf(stderr, "usage: sailover-input --dir <private-dir>\n"); return 2; }
+  if (!dir) { fprintf(stderr, "usage: obelisk-input --dir <private-dir>\n"); return 2; }
   setvbuf(stderr, NULL, _IOLBF, 0);
 
   static char path[128];

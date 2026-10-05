@@ -1,7 +1,7 @@
 # voile-lkd
 
 The Linux engine of [Voile](https://github.com/Zagrios/voile): it runs x86-64 **Linux** programs, unmodified,
-in native macOS arm64 processes, with no virtual machine and no Hypervisor.framework. SailOver uses it for Windows
+in native macOS arm64 processes, with no virtual machine and no Hypervisor.framework. Obelisk uses it for Windows
 games whose anti-cheat supports Linux (Easy Anti-Cheat on Rocket League): the game runs in voile-wine built for
 Linux, the anti-cheat loads its Linux module and sees a real Linux kernel interface.
 
@@ -14,10 +14,10 @@ Private. See [docs/V1.md](docs/V1.md) for what works, the measurements and the k
 | `lkd/` | **LKD**, Linux kernel on Darwin: a C library that implements about 375 Linux x86-64 system calls (memory, files, processes and threads, signals, futex, sockets, procfs, ptrace) on top of macOS. One host process per guest process. |
 | `fexdarwin/` | The host program, `fexdarwin-run`: FEXCore translates the guest's x86-64 code to arm64, every guest `SYSCALL` goes to LKD. Signals, thread kicks, self-modifying code, fork/exec, the safety watchdog and a guest thread dump (`FEXDARWIN_DUMP_DIR`). |
 | `fex/` | Submodule [Zagrios/FEX](https://github.com/Zagrios/FEX): FEX-Emu with the Darwin port. |
-| `wsd/` | The window server: Cocoa windows, Metal presentation of the frames the guest renders (zero copy), keyboard and mouse events, and audio output through CoreAudio. The guest's Wine drivers (`winesailover.drv`, `winesailaudio.drv`, Neptune's `nptunix`) talk to it over a UNIX socket (`wsd/PROTOCOL.md`, `wsd/wsd_protocol.h`). `wsdctl` injects test input. |
+| `wsd/` | The window server: Cocoa windows, Metal presentation of the frames the guest renders (zero copy), keyboard and mouse events, and audio output through CoreAudio. The guest's Wine drivers (`wineobelisk.drv`, `wineobeliskaudio.drv`, Neptune's `nptunix`) talk to it over a UNIX socket (`wsd/PROTOCOL.md`, `wsd/wsd_protocol.h`). `wsdctl` injects test input. |
 | `tests/` | Witness programs: x86-64 ELF (`elf-x86_64`, freestanding), glibc (`glibc-x86_64`), Darwin facts, graphics, the EAC probe campaign. |
 | `tools/dev/` | Development scripts that drive a whole session (authenticated Rocket League launch, offline Free Play, mouse stress). |
-| `tools/epic-launch/` | Builds an Epic launch plan with SailOver's `epic-kit` (development only; SailOver does this itself). |
+| `tools/epic-launch/` | Builds an Epic launch plan with Obelisk's `epic-kit` (development only; Obelisk does this itself). |
 | `docs/` | `V1.md`, and `journal/`, the research and integration journal (French). |
 
 What runs inside the guest comes from elsewhere: voile-wine built for Linux x86-64, a Debian x86-64 root, Neptune's

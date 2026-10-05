@@ -33,7 +33,7 @@ Annoncer des pages de 16 Kio à glibc fait échouer ld.so (« ELF load command a
 MESURE, hôte `fexdarwin-run` lié à un instantané privé de `liblkd.a` (modules core, mm, fs, task livrés ; sig en cours), journaux sous `evidence/fexcore-darwin/runs-lkd/` :
 
 - Neuf témoins sur treize passent en mode LKD : `w01_hello`, `w03_simd`, `w04_tls`, `w05_mem` (39/39), `w06_smc` (20/20, mode SMC complet), `w08_sys`, `w09_lowmem`, `w10_threads`, `w13_deeprec`. Les quatre qui échouent (`w02_int`, `w11_badjump`, `w14_overflow`, `w15_async`) passent tous par la livraison de signaux : `lkd_signal_next` rend -1 malgré un gestionnaire installé (module sig en cours, reproduction transmise à son agent). Côté moteur, l'interruption fonctionne : le thread qui boucle sans appel système est arrêté à `rip 0x2aaaaaaaf7ea` et atteint le point sûr.
-- Programmes glibc Debian 2.41, dynamiques, par `ld.so`, racine Debian montée en lecture seule : `/usr/bin/true`, `/bin/ls /`, `/bin/uname -a` (`Linux sailover 6.12.0-lkd ... x86_64`), `dash -c` avec substitution de commande (fork réel). `vfork` puis `execve` puis `exit_group` du fils, SIGCHLD livré au gestionnaire de dash (cadre construit, `rt_sigreturn`), `wait4` rend le fils et `status=0` s'affiche ; ensuite le processus ne sort pas (attente perdue dans `wait4` entre deux processus hôtes, reproduction transmise à l'agent task).
+- Programmes glibc Debian 2.41, dynamiques, par `ld.so`, racine Debian montée en lecture seule : `/usr/bin/true`, `/bin/ls /`, `/bin/uname -a` (`Linux obelisk 6.12.0-lkd ... x86_64`), `dash -c` avec substitution de commande (fork réel). `vfork` puis `execve` puis `exit_group` du fils, SIGCHLD livré au gestionnaire de dash (cadre construit, `rt_sigreturn`), `wait4` rend le fils et `status=0` s'affiche ; ensuite le processus ne sort pas (attente perdue dans `wait4` entre deux processus hôtes, reproduction transmise à l'agent task).
 - Wine GE-Proton11-7 : `/opt/ge-proton/files/bin/wine --version` affiche `wine-11.0 (Staging)` et sort avec 0. Les appels `socket(AF_UNIX)` répondent ENOSYS (module net en cours) ; c'est la condition suivante pour wineserver et wineboot.
 
 Corrections faites pour y arriver :
@@ -178,11 +178,11 @@ Clavier :
 
 Son :
 - Cause : Wine construit sans pilote audio Linux, et aucun serveur de son côté hôte (« No driver from pulse,alsa,oss,coreaudio »).
-- Correctif : nouveau pilote Wine `winesailaudio.drv`, dérivé de wineoss pour la logique de temps.
+- Correctif : nouveau pilote Wine `wineobeliskaudio.drv`, dérivé de wineoss pour la logique de temps.
   - Les trames vont dans un anneau partagé (memfd, `struct wsd_audio_ring`), passé à wsd par SCM_RIGHTS.
   - wsd les joue par une AudioUnit CoreAudio par flux, dont le rappel lit l'anneau directement : `WSD_AUDIO_OPEN/START/STOP/RESET/CLOSE` dans `wsd_protocol.h`.
   - L'ouverture est synchrone (PING/PONG) : un refus de wsd fait échouer le flux proprement.
-  - `sailaudio` est en tête de la liste par défaut de mmdevapi. Pas de MIDI ni d'aux. Pas de capture pour l'instant.
+  - `obeliskaudio` est en tête de la liste par défaut de mmdevapi. Pas de MIDI ni d'aux. Pas de capture pour l'instant.
 - Mesures :
   - client natif : 48 000 trames lues en 1,12 s ;
   - WASAPI partagé par événements (`src/wine-linux/tests/wasapitone.c`) : position 2,000 s après 2,154 s, en float 48 kHz stéréo ;
@@ -191,7 +191,7 @@ Son :
 
 ## Chargements de cartes : de 26–38 s à 2–5 s (2026-10-03, 14:57)
 
-MESURE (profil `sample` de chaque processus invité, déclenché par chaque `LoadMap:` de `Launch.log`, lancements par SailOver) :
+MESURE (profil `sample` de chaque processus invité, déclenché par chaque `LoadMap:` de `Launch.log`, lancements par Obelisk) :
 - Avant : Free Play 37,8 s, retour au menu 18,4 s, démarrage jusqu'au menu 80,6 s. Le fil principal du jeu passait 69 % du chargement bloqué dans `read` sur un tube (attentes Wine), 10 % dans `getdents64`, 10 % dans le code JIT. Le serveur de rendu et wineserver étaient presque inactifs.
 - `getdents` : `snap_add` comparait chaque nom à tous les précédents. `CookedPCConsole` contient 20 746 fichiers, soit environ 215 millions de `strcmp` et 357 ms par listage. Wine liste le dossier à chaque recherche insensible à la casse qui échoue. Les noms d'un `readdir` hôte sont uniques : seuls les points de montage et les dossiers virtuels gardent la vérification. Listage : 6,4 ms (test `getdents_large_directory`).
 - LKD était compilé en Debug (sans optimisation) par défaut, et c'est ce binaire qui partait dans l'archive `lkd`. `lkd/build.sh` compile désormais en Release. Toute la suite passe en Release (le test de borne de `mm/watch.c` attendait encore l'ancienne borne de 4).
@@ -202,7 +202,7 @@ MESURE (profil `sample` de chaque processus invité, déclenché par chaque `Loa
 Symptômes rapportés par le joueur : de gros pics de lag en jeu, le menu qui reste lent après un match, et l'image entière qui revient en arrière le temps d'une image.
 
 MESURE, en trois temps :
-- Les profils `sample` de l'après-midi faussaient les sessions. Ils suspendent chaque thread environ mille fois par seconde, et Free Play tombait de 60 à environ 25 i/s tant qu'ils tournaient. Sans profil, Free Play tient 60 i/s. D'où le journal interne `FEXDARWIN_HITCH_LOG` (temps de traduction FEX par thread, fautes SMC et invalidations, fenêtres de 50 ms, pages fautives toutes les 10 s) et le fichier `fexdarwin.env`, qui l'active sans toucher au lanceur de SailOver.
+- Les profils `sample` de l'après-midi faussaient les sessions. Ils suspendent chaque thread environ mille fois par seconde, et Free Play tombait de 60 à environ 25 i/s tant qu'ils tournaient. Sans profil, Free Play tient 60 i/s. D'où le journal interne `FEXDARWIN_HITCH_LOG` (temps de traduction FEX par thread, fautes SMC et invalidations, fenêtres de 50 ms, pages fautives toutes les 10 s) et le fichier `fexdarwin.env`, qui l'active sans toucher au lanceur d'Obelisk.
 - Tempête SMC : environ 19 000 fautes d'écriture par seconde dans le processus du jeu pendant toute la partie, 0,9 s de gestion par tranche de 10 s, presque toutes sur `nptunix.so+0x3000`. La fin de son code et ses données (`.got`, `.data`, `.bss`) partageaient une page hôte de 16 Kio. En reliant les 27 `.so` Unix de voile-wine avec `-z max-page-size=16384` (Voile, `build-linux.sh`), on tombe à 4 fautes par 10 s, et les pics ont disparu du ressenti du joueur.
 - Image en arrière : wsd fait copier par son GPU 64 pixels du tampon qu'il dessine. L'image N est parfois dessinée avec les pixels de N−3, qui sont le contenu précédent du même tampon de la chaîne d'échange. Relu par le CPU 2 à 8 ms plus tard, le tampon contient la bonne image : la copie arrive, mais après le signal « GPU terminé ». Correction annexe dans vtest (neptune) : un retrait de fence sur un anneau d'événements Neptune emportait les soumissions précédentes du même anneau. C'était un vrai défaut (signal prématuré, puis accès après libération au retrait suivant), mais ce n'était pas la cause : après correction, il reste environ une image en arrière par minute. Piste suivante : ordonner la présentation sur la fin réelle du tampon de commandes DXMT (requête d'événement D3D11 côté serveur de rendu) plutôt que sur l'événement partagé.
 

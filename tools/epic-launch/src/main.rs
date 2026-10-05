@@ -1,7 +1,7 @@
 //! epic-launch SECRETS_DIR GAME_DIR LANGUAGE
 //! Reads SECRETS_DIR/epic-session.json ({accountId, displayName, refreshToken}), restores the Epic session, writes the
 //! rotated credentials back to the same file, asks Epic for the launch plan of the installed game in GAME_DIR (receipt
-//! .sailover-install.json) and writes SECRETS_DIR/launch-plan.json (arguments and working directory) and, if the game
+//! .obelisk-install.json) and writes SECRETS_DIR/launch-plan.json (arguments and working directory) and, if the game
 //! needs one, SECRETS_DIR/ownership.bin. All files mode 0600. Prints only counts and key names, never values.
 use std::fs;
 use std::io::Write;
@@ -31,7 +31,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let session: serde_json::Value = serde_json::from_slice(&fs::read(secrets.join("epic-session.json"))?)?;
     let field = |k: &str| session.get(k).and_then(|v| v.as_str()).map(str::to_owned).ok_or(format!("missing {k}"));
     let creds = Credentials { account_id: field("accountId")?, display_name: field("displayName")?, refresh_token: field("refreshToken")? };
-    let receipt: serde_json::Value = serde_json::from_slice(&fs::read(game.join(".sailover-install.json"))?)?;
+    let receipt: serde_json::Value = serde_json::from_slice(&fs::read(game.join(".obelisk-install.json"))?)?;
     let rfield = |k: &str| receipt.get(k).and_then(|v| v.as_str()).map(str::to_owned).ok_or(format!("receipt missing {k}"));
 
     let client = Client::restore(creds).await.map_err(|e| format!("restore: {e}"))?;

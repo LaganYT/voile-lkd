@@ -71,4 +71,4 @@ Chaque palier a des programmes possédés et des oracles enregistrés (jamais QE
 ## 7. Questions pour l'utilisateur
 
 1. Si le mur des 4 Kio ou des 16 Kio bloquait Wine de façon irréparable, accepte-t-il Hypervisor.framework par processus comme repli ? Non demandé tant qu'aucun témoin n'établit ce blocage.
-2. Jeton Epic : le classifieur de permissions a refusé la lecture du trousseau. Il n'est requis qu'à la fin (session protégée). L'utilisateur peut écrire lui-même le fichier avec la commande `!` indiquée dans la conversation, ou lancer le jeu depuis SailOver avec un moteur de laboratoire.
+2. Jeton Epic : le classifieur de permissions a refusé la lecture du trousseau. Il n'est requis qu'à la fin (session protégée). L'utilisateur peut écrire lui-même le fichier avec la commande `!` indiquée dans la conversation, ou lancer le jeu depuis Obelisk avec un moteur de laboratoire.

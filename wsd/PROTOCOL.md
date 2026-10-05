@@ -79,7 +79,7 @@ All times are `clock_gettime_nsec_np(CLOCK_UPTIME_RAW)` nanoseconds, the same ti
 
 ## Application
 
-SailOver starts wsd from a bundle named after the game (`CFBundleName`), so the menu bar, the Dock and Cmd-Tab show
+Obelisk starts wsd from a bundle named after the game (`CFBundleName`), so the menu bar, the Dock and Cmd-Tab show
 the game's name; APP_ICON gives its icon. The application menu has Hide and Quit. Quit (Cmd-Q, the Dock) sends
 `EV_CLOSE` to every window instead of ending the server under a running game; with no window it ends the server.
 

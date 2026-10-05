@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build sailover-input (native arm64, ad-hoc signed, no entitlements) with SDL3 linked in statically.
+# Build obelisk-input (native arm64, ad-hoc signed, no entitlements) with SDL3 linked in statically.
 # SDL comes from its release archive, checked against the pinned SHA-256, and is built once with only what
 # gamepads need (no video, audio, rendering or force feedback). Needs cmake and ninja.
 set -eu
@@ -34,8 +34,8 @@ fi
 # The frameworks and libraries SDL's static build names for its users, without the library itself.
 sdl_libs=$(sed -n 's/^Libs: *//p' "$PREFIX/lib/pkgconfig/sdl3.pc" | sed -e 's/-L[^ ]*//' -e 's/-lSDL3//')
 # shellcheck disable=SC2086
-clang -arch arm64 -O2 -Wall -I"$PREFIX/include" -o "$S/bin/sailover-input" "$S/sailover-input.c" \
+clang -arch arm64 -O2 -Wall -I"$PREFIX/include" -o "$S/bin/obelisk-input" "$S/obelisk-input.c" \
   "$PREFIX/lib/libSDL3.a" $sdl_libs -framework CoreFoundation
-codesign -s - -f "$S/bin/sailover-input"
+codesign -s - -f "$S/bin/obelisk-input"
 cp "$SDL/LICENSE.txt" "$S/bin/SDL3-LICENSE.txt"
-shasum -a 256 "$S/sailover-input.c" "$S/sailover_input_protocol.h" "$S/bin/sailover-input"
+shasum -a 256 "$S/obelisk-input.c" "$S/obelisk_input_protocol.h" "$S/bin/obelisk-input"

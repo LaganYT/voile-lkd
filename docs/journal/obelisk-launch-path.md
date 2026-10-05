@@ -1,29 +1,29 @@
-# Chemin de lancement SailOver d'un jeu Epic Windows (Rocket League)
+# Chemin de lancement Obelisk d'un jeu Epic Windows (Rocket League)
 
-Date : 2026-10-02. Dépôt `sailover`, branche `main`, HEAD `04efbff` (seul `docs/` est non suivi). Tout a été lu ou mesuré en lecture seule : aucun jeu, aucun EAC, aucun SailOver, aucun Wine n'a été lancé pour ce rapport.
+Date : 2026-10-02. Dépôt `obelisk`, branche `main`, HEAD `04efbff` (seul `docs/` est non suivi). Tout a été lu ou mesuré en lecture seule : aucun jeu, aucun EAC, aucun Obelisk, aucun Wine n'a été lancé pour ce rapport.
 
 Conventions.
 - LU : constaté dans le code ou un document cité (`fichier:ligne`).
 - MESURÉ : constaté sur le disque de cette machine (listing, taille, hash, analyse statique d'un fichier sans l'exécuter).
 - DÉDUIT : inférence de ma part, jamais présentée comme un fait.
-- Abréviations de chemins : `GR` = `crates/game-runtime/src`, `EK` = `crates/storefronts/epic-kit/src`, `SC` = `crates/sailover-core/src`, `SN` = `crates/steam-native/src`, `LIB` = `~/Library/Application Support/com.zagrios.sailover`, `EXP` = `build/experiments/rocket-wine-fex-darwin-20261002`. Les citations `rocket-league-macos.md:N` désignent `docs/research/rocket-league-macos.md`. `voile/` et `voile-wine/` sont les dépôts frères de `Zagrios/`.
+- Abréviations de chemins : `GR` = `crates/game-runtime/src`, `EK` = `crates/storefronts/epic-kit/src`, `SC` = `crates/obelisk-core/src`, `SN` = `crates/steam-native/src`, `LIB` = `~/Library/Application Support/com.zagrios.obelisk`, `EXP` = `build/experiments/rocket-wine-fex-darwin-20261002`. Les citations `rocket-league-macos.md:N` désignent `docs/research/rocket-league-macos.md`. `voile/` et `voile-wine/` sont les dépôts frères de `Zagrios/`.
 
 ## 0. Limites de cette lecture
 
 - Je n'ai pas lu `EpicSessions/`, `SteamSessions/`, `SteamCloud*`, les fichiers de registre du prefix (`system.reg`, `user.reg`, `userdef.reg`), ni les journaux EAC du prefix. Les « réglages de registre » de la section 4 viennent donc du code, pas du registre réel.
-- Le classifieur de permissions a refusé la lecture du journal `~/Library/Logs/SailOver/Epic/wine-Sugar.log` (297 octets). Je n'ai pas contourné ce refus : son contenu est inconnu, seuls son nom, sa taille, son mode et sa date (liste de répertoire) sont connus.
+- Le classifieur de permissions a refusé la lecture du journal `~/Library/Logs/Obelisk/Epic/wine-Sugar.log` (297 octets). Je n'ai pas contourné ce refus : son contenu est inconnu, seuls son nom, sa taille, son mode et sa date (liste de répertoire) sont connus.
 - `docs/architecture.md` et `docs/epic-protocol.md` n'existent plus dans l'arbre : le commit `7d4d22f` (2026-09-24, « remove docs ») les a supprimés. Je les ai relus par `git show 7d4d22f^:docs/...` (lecture seule). Ils datent d'avant le câblage Wine du 26 septembre et portent l'ancien nom « Forge ».
 - Contradictions relevées dans le dépôt : voir la section 8.1.
 
 ## 1. Les faits qui comptent pour l'architecture
 
 1. Le lancement d'un jeu Epic Windows via Wine est déjà câblé de bout en bout à HEAD (`GR/epic/content.rs:357-416`, `GR/epic/windows.rs:10-44`, `GR/epic/launch.rs:258-274`, `GR/wine.rs:161-199`). Le paragraphe `README.md:74` qui dit le contraire est obsolète, comme le note déjà la chronologie (`docs/research/rocket-league-macos.md:15`). Les traces d'un lancement réel du 26 septembre existent sur disque (MESURÉ : `wine-Sugar.log`, `anticheatlauncher.log`, `service.log`, noms et dates seulement) et la chronologie rapporte qu'il atteint le bootstrapper EAC puis s'arrête sur le code launcher 206 (`rocket-league-macos.md:19-25`).
-2. Trois processus se relaient : l'application (interface Swift et bibliothèque Rust dans le même processus), un superviseur détaché `sailover-steam-host epic-supervise`, puis un helper arm64 `sailover-steam-host game-exec` qui fait `exec` du binaire `bin/wine` (x86-64, sous Rosetta). Le contrat neutre entre superviseur et moteur est la structure `Target` (`GR/supervisor/mod.rs:41-50`) et le message `exec::Admission` (`GR/supervisor/exec.rs:13-22`).
-3. Pour Rocket League, SailOver lance `Binaries/Win64/Launcher.exe` (MESURÉ dans le reçu), avec pour répertoire de travail `Binaries/Win64`. C'est un petit programme .NET de Psyonix (79 184 octets) qui, par défaut, lance `RocketLeague_EAC.exe` avec les mêmes arguments, puis attend (IL décodé, section 3.7). Il faut donc Wine Mono, ou lancer `RocketLeague_EAC.exe` directement.
+2. Trois processus se relaient : l'application (interface Swift et bibliothèque Rust dans le même processus), un superviseur détaché `obelisk-steam-host epic-supervise`, puis un helper arm64 `obelisk-steam-host game-exec` qui fait `exec` du binaire `bin/wine` (x86-64, sous Rosetta). Le contrat neutre entre superviseur et moteur est la structure `Target` (`GR/supervisor/mod.rs:41-50`) et le message `exec::Admission` (`GR/supervisor/exec.rs:13-22`).
+3. Pour Rocket League, Obelisk lance `Binaries/Win64/Launcher.exe` (MESURÉ dans le reçu), avec pour répertoire de travail `Binaries/Win64`. C'est un petit programme .NET de Psyonix (79 184 octets) qui, par défaut, lance `RocketLeague_EAC.exe` avec les mêmes arguments, puis attend (IL décodé, section 3.7). Il faut donc Wine Mono, ou lancer `RocketLeague_EAC.exe` directement.
 4. Il y a deux codes d'échange Epic distincts : l'un ouvre la session Epic propre du superviseur (transmis par un tube privé), l'autre est le `-AUTH_PASSWORD=` de la ligne de commande du jeu (donc visible dans `argv` du processus Wine une fois lancé, section 3.5).
 5. Il n'existe aucun CLI de lancement. Les coutures de test existantes sont le trait `Services` (`GR/epic/launch.rs:18-36`), le trait `Launch` (`GR/supervisor/session.rs:117-181`) et le message `Admission` du helper `game-exec` (exemple d'usage : `crates/steam-native/tests/exec_game.rs:15-33`).
 6. Le point d'insertion le plus petit pour un chemin « userland Linux sous FEX » est la fonction qui produit un `Target` (aujourd'hui `wine::target`, `GR/wine.rs:181-199`), plus la préparation du prefix (`wine::prepare`, `GR/wine.rs:161-176`), plus le contrôle de la porte Rosetta (`GR/supervisor/session.rs:581`).
-7. D3DMetal s'active par deux moyens combinés : les DLL d'Apple posées dans `lib/wine/x86_64-windows` du runtime et deux variables d'environnement que SailOver positionne seulement si `lib/external/libd3dshared.dylib` existe (`GR/wine.rs:80-83,134-140`). `SAILOVER_GRAPHICS` n'est lue par aucun code de SailOver : elle n'existe que dans `voile/scripts/wine-dev.sh`.
+7. D3DMetal s'active par deux moyens combinés : les DLL d'Apple posées dans `lib/wine/x86_64-windows` du runtime et deux variables d'environnement qu'Obelisk positionne seulement si `lib/external/libd3dshared.dylib` existe (`GR/wine.rs:80-83,134-140`). `OBELISK_GRAPHICS` n'est lue par aucun code d'Obelisk : elle n'existe que dans `voile/scripts/wine-dev.sh`.
 8. La bibliothèque installée contient `Voile/current` (runtime de développement, prioritaire, sans `runtime.json`) et `Voile/v26.3.0-4`, alors que le dépôt épingle `v26.3.0-6` (MESURÉ, `GR/voile.rs:65-73`, `voile-release.json`).
 
 ## 2. Pipeline de lancement, dans l'ordre réel
@@ -33,16 +33,16 @@ L'ordre réel diffère de l'ordre demandé : le prefix et les prérequis sont pr
 Arbre de processus d'un lancement (schéma de ma main : LU pour les trois premiers niveaux, DÉDUIT de l'IL de `Launcher.exe` et de la chronologie pour le dernier) :
 
 ```
-SailOver.app                       interface Swift + bibliothèque Rust, un seul processus
- `- sailover-steam-host epic-supervise     détaché (setsid), env = PATH seul, un JSON Request sur stdin
-     `- sailover-steam-host game-exec      arm64, env = Target.environment, un JSON Admission sur stdin
+Obelisk.app                       interface Swift + bibliothèque Rust, un seul processus
+ `- obelisk-steam-host epic-supervise     détaché (setsid), env = PATH seul, un JSON Request sur stdin
+     `- obelisk-steam-host game-exec      arm64, env = Target.environment, un JSON Admission sur stdin
          = exec  <Voile>/bin/wine Launcher.exe <args>        x86-64, traduit par Rosetta
              `- wineserver, puis Launcher.exe (Mono) -> RocketLeague_EAC.exe -> RocketLeague.exe
 ```
 
 | # | Étape | Fonction | Fichier:ligne |
 |---|---|---|---|
-| 0 | Clic Launch côté interface | `GameInstallations.launch` appelle `core.launch(installation:verify:)` | `apps/macos/SailOver/Models/GameInstallations.swift:507-508`, pont `crates/sailover-bridge/src/installations.rs:506-508` |
+| 0 | Clic Launch côté interface | `GameInstallations.launch` appelle `core.launch(installation:verify:)` | `apps/macos/Obelisk/Models/GameInstallations.swift:507-508`, pont `crates/obelisk-bridge/src/installations.rs:506-508` |
 | 1 | Admission : la Reservation est prise avant toute attente | `Installations::launch` puis `Sessions::admit` | `GR/installations.rs:841-865`, `GR/sessions.rs:590-612` |
 | 2 | Vérification des fichiers (réseau Epic), seulement si `verify` ou si le reçu l'exige | `shared.perform(&verification)` ; la requête vient de `Epic::update_request` | `GR/installations.rs:849,897-901`, `GR/epic/mod.rs:303-305,343-352` |
 | 3 | Remise au superviseur | `Content::launch` puis `Admission::hand_off(Handover)` | `GR/epic/content.rs:248-266`, `GR/sessions.rs:841-864` |
@@ -51,7 +51,7 @@ SailOver.app                       interface Swift + bibliothèque Rust, un seul
 | 6 | Authentification côté interface : compte puis code d'échange puis recontrôle du compte | `account_id()`, `exchange_code()`, `account_id()` | `GR/epic/content.rs:393-399` |
 | 7 | Sauvegarde des identifiants renouvelés avant que le jeu parte | `Handover::before_begin` | `GR/epic/content.rs:403-406`, `GR/sessions.rs:843,432-434` |
 | 8 | Création du superviseur et remise de la requête par socketpair privé | `epic::start` puis `Client::start_with` | `GR/epic/client.rs:8-43`, `GR/supervisor/client.rs:384-450` |
-| 9 | Le superviseur devient un processus détaché | `sailover-steam-host epic-supervise` (`setsid`) puis `epic::serve` | `SN/bin/sailover-steam-host.rs:18,90-95`, `SN/native.rs:243-264`, `GR/epic/launch.rs:301-303` |
+| 9 | Le superviseur devient un processus détaché | `obelisk-steam-host epic-supervise` (`setsid`) puis `epic::serve` | `SN/bin/obelisk-steam-host.rs:18,90-95`, `SN/native.rs:243-264`, `GR/epic/launch.rs:301-303` |
 | 10 | Ouverture du journal, du socket de contrôle, du verrou propriétaire | `lifecycle::serve` | `GR/supervisor/session.rs:404-492` |
 | 11 | Porte Begin : attend le feu vert de l'interface (120 s max) | `Session::begun` | `GR/supervisor/session.rs:36-37,357-372,569-571` |
 | 12 | Authentification du superviseur : sa propre session depuis le code d'échange | `Launch::authenticate` puis `Client::from_exchange_code` | `GR/epic/launch.rs:136-140`, `EK/client.rs:78-82`, `EK/auth.rs:137-146` |
@@ -60,7 +60,7 @@ SailOver.app                       interface Swift + bibliothèque Rust, un seul
 | 15 | Porte Rosetta (build aarch64 et architecture Intel) | `wait_for_rosetta` | `GR/supervisor/session.rs:577-594`, `GR/supervisor/architecture.rs:143-172` |
 | 16 | Préparation de l'hôte (helper, sous-commande, environnement) | `Launch::prepare_host` | `GR/epic/launch.rs:175-190` |
 | 17 | Création du helper et admission : un seul message JSON sur son stdin | spawn `game-exec`, `exec::send` | `GR/supervisor/session.rs:596-657`, `GR/supervisor/exec.rs:27-35` |
-| 18 | Le helper devient le jeu (`exec` de `bin/wine`) | `game_exec` | `GR/supervisor/exec.rs:73-86`, `SN/bin/sailover-steam-host.rs:19-23` |
+| 18 | Le helper devient le jeu (`exec` de `bin/wine`) | `game_exec` | `GR/supervisor/exec.rs:73-86`, `SN/bin/obelisk-steam-host.rs:19-23` |
 | 19 | Confirmation d'exec, identité du processus, phase Running, présence Epic | `confirm_execution`, `wait_identity`, `Presence::start` | `GR/supervisor/child.rs:28-118`, `GR/supervisor/session.rs:675-695` |
 | 20 | Supervision : journal, socket de contrôle, observation, arrêt, révocation | `listen`, `respond`, `Session::update` | `GR/supervisor/session.rs:731-889,334-345` |
 | 21 | Sortie : attente du processus, phase Finalizing, synchro Cloud de sortie, phase finale | `wait_for_exit`, `LaunchCloud::finished`, `update` | `GR/supervisor/session.rs:696-728`, `GR/supervisor/child.rs:16-24` |
@@ -68,13 +68,13 @@ SailOver.app                       interface Swift + bibliothèque Rust, un seul
 
 Détails qui pèsent sur un nouveau chemin.
 
-- Sélection du runtime (`GR/voile.rs:61-73`) : `LIB/Voile/current` s'il contient `bin/wine` (installé à la main par `voile/scripts/install-dev.sh`, il prime) ; sinon `LIB/Voile/<version épinglée>` si `bin/wine` existe ET si son `runtime.json` porte cette version ; sinon aucun runtime (`WineUnavailable`). Si aucun runtime n'existe, `install_runtime` télécharge l'archive épinglée (`voile-release.json` : URL, taille, SHA-256) en HTTPS avec contrôle de taille et de SHA-256, l'extrait par `/usr/bin/tar -xJf` dans un dossier caché, vérifie `bin/wine` et la version, renomme, puis supprime les autres versions sauf `current` (`GR/voile.rs:116-226`). Une build Debug lit `SAILOVER_VOILE_ARCHIVE` (copie locale de l'archive, SHA-256 contrôlé) à la place du téléchargement (`GR/sessions.rs:813-822`).
+- Sélection du runtime (`GR/voile.rs:61-73`) : `LIB/Voile/current` s'il contient `bin/wine` (installé à la main par `voile/scripts/install-dev.sh`, il prime) ; sinon `LIB/Voile/<version épinglée>` si `bin/wine` existe ET si son `runtime.json` porte cette version ; sinon aucun runtime (`WineUnavailable`). Si aucun runtime n'existe, `install_runtime` télécharge l'archive épinglée (`voile-release.json` : URL, taille, SHA-256) en HTTPS avec contrôle de taille et de SHA-256, l'extrait par `/usr/bin/tar -xJf` dans un dossier caché, vérifie `bin/wine` et la version, renomme, puis supprime les autres versions sauf `current` (`GR/voile.rs:116-226`). Une build Debug lit `OBELISK_VOILE_ARCHIVE` (copie locale de l'archive, SHA-256 contrôlé) à la place du téléchargement (`GR/sessions.rs:813-822`).
 - La Reservation (`Sessions::admit`, `GR/sessions.rs:590-612`) est exclusive par storefront : un seul superviseur Epic à la fois, gardé aussi par `start.lock` et `owner.lock` (`GR/supervisor/client.rs:394-403`, `GR/supervisor/session.rs:412-419`).
 - L'ordre des étapes du superviseur est dicté par le trait `Launch` (`GR/supervisor/session.rs:112-181`) : authentification, Cloud, cible et architecture, porte Rosetta (puis cible de nouveau après installation de Rosetta), préparation de l'hôte, admission d'exec.
 - La confirmation d'exec réussit à l'EOF du tube CLOEXEC du helper, ou, à défaut, quand l'exécutable du processus inspecté est égal au `target.executable` canonique après 3 s (`GR/supervisor/child.rs:72-79`). Un nouveau moteur dont le processus final n'a pas ce chemin d'exécutable sera donc confirmé par l'EOF du tube ou pas du tout.
 - Le code de sortie enregistré est celui du processus `wine` suivi (`GR/supervisor/child.rs:16-24`). Si l'exec n'a jamais été confirmé, la session se termine `Failed` (`GR/supervisor/session.rs:715-727`).
-- Arrêt : SIGTERM au superviseur (quand SailOver se termine) appelle `Session::terminated` (`GR/supervisor/session.rs:279-289,497-506`) : `kill -TERM` du jeu, `wineserver -k` du prefix, 5 s de grâce, `kill -KILL` (`GR/supervisor/session.rs:294-320`), puis `wine::end_orphans` (`GR/wine.rs:466-490`) qui tue par `lsof` tout processus qui exécute un fichier sous le dossier donné : le dossier du runtime à l'arrêt (`GR/supervisor/session.rs:286-288`), le dossier `Voile` au démarrage de l'application (`AppLifecycle.swift:27`).
-- DÉDUIT, risque de supervision : `Settings.json` d'EAC contient `"wait_for_game_process_exit": "false"` (MESURÉ). Si le bootstrapper rend la main avant la fin du jeu, le processus `wine` suivi par SailOver (celui de `Launcher.exe`) se termine avant le jeu. La session passerait alors à Finalizing/Finished alors que `RocketLeague.exe` tourne encore dans le prefix. À vérifier lors du premier essai protégé.
+- Arrêt : SIGTERM au superviseur (quand Obelisk se termine) appelle `Session::terminated` (`GR/supervisor/session.rs:279-289,497-506`) : `kill -TERM` du jeu, `wineserver -k` du prefix, 5 s de grâce, `kill -KILL` (`GR/supervisor/session.rs:294-320`), puis `wine::end_orphans` (`GR/wine.rs:466-490`) qui tue par `lsof` tout processus qui exécute un fichier sous le dossier donné : le dossier du runtime à l'arrêt (`GR/supervisor/session.rs:286-288`), le dossier `Voile` au démarrage de l'application (`AppLifecycle.swift:27`).
+- DÉDUIT, risque de supervision : `Settings.json` d'EAC contient `"wait_for_game_process_exit": "false"` (MESURÉ). Si le bootstrapper rend la main avant la fin du jeu, le processus `wine` suivi par Obelisk (celui de `Launcher.exe`) se termine avant le jeu. La session passerait alors à Finalizing/Finished alors que `RocketLeague.exe` tourne encore dans le prefix. À vérifier lors du premier essai protégé.
 
 ## 3. Forme exacte du lancement d'un jeu Epic Windows
 
@@ -83,7 +83,7 @@ Détails qui pèsent sur un nouveau chemin.
 LU, assemblé de `GR/wine.rs:181-199`, `GR/epic/launch.rs:258-274`, `GR/supervisor/session.rs:596-657`, `GR/supervisor/exec.rs:77-86`.
 
 ```
-helper  : <app>/Contents/Helpers/SteamNative/sailover-steam-host game-exec   (arm64, non traduit)
+helper  : <app>/Contents/Helpers/SteamNative/obelisk-steam-host game-exec   (arm64, non traduit)
           env_clear, puis exactement Target.environment ; stdin = socketpair ; stdout = tube ; stderr = /dev/null
 admission (un JSON sur le stdin du helper) :
   executable        = <runtime>/bin/wine                       (x86-64, donc Rosetta)
@@ -95,7 +95,7 @@ admission (un JSON sur le stdin du helper) :
                         -epiclocale=<locale>, -epicsandboxid=<namespace>,
                         [-epicdeploymentid=<id>], [-epicovt=Z:\...\ownership.bin] ]
   working_directory = <install>/Binaries/Win64                 (parent de l'exécutable du reçu)
-  log               = ~/Library/Logs/SailOver/Epic/wine-<app_name>.log
+  log               = ~/Library/Logs/Obelisk/Epic/wine-<app_name>.log
 puis le helper fait exec(executable, arguments) avec cwd = working_directory,
   stdin = /dev/null, stdout = /dev/null, stderr = le log (créé, tronqué, mode 0600)
 ```
@@ -104,7 +104,7 @@ Précisions.
 - L'argument 1 de Wine est le chemin Unix canonique du `.exe`, vérifié comme situé dans l'installation et de format PE (`GR/wine.rs:202-211,555-566`). Wine le traduit en `Z:\Users\...`. Le chemin contient une espace (`Application Support`).
 - L'ordre des arguments est : exécutable, arguments du reçu, arguments du catalogue, les neuf arguments Epic fixes, `-epicdeploymentid` s'il existe, puis `-epicovt` ajouté en dernier par `windows_target` (`EK/client/launch.rs:194-217`, `GR/epic/launch.rs:266-272`).
 - Le répertoire de travail et l'exécutable sont confinés à l'installation, liens symboliques résolus (`SC/launch.rs:119-128`).
-- Le helper `game-exec` refuse de tourner traduit (`sysctl.proc_translated`) et exige son état arm64 (`SN/bin/sailover-steam-host.rs:11-13`, `SN/native.rs:186-198`). Il porte les droits `allow-dyld-environment-variables` et `disable-library-validation` (MESURÉ par `codesign -d --entitlements` sur le build Debug de `build/xcode/...`).
+- Le helper `game-exec` refuse de tourner traduit (`sysctl.proc_translated`) et exige son état arm64 (`SN/bin/obelisk-steam-host.rs:11-13`, `SN/native.rs:186-198`). Il porte les droits `allow-dyld-environment-variables` et `disable-library-validation` (MESURÉ par `codesign -d --entitlements` sur le build Debug de `build/xcode/...`).
 
 ### 3.2 Environnement complet du processus Wine
 
@@ -131,9 +131,9 @@ MESURÉ sur cette machine : ni `LIB/Voile/current/winedebug` ni `LIB/Voile/v26.3
 
 ### 3.3 Canaux de debug Wine
 
-- Par défaut `err+all,fixme-all` (`GR/wine.rs:112`). Un fichier `winedebug` à la racine du runtime remplace cette valeur pour TOUTES les commandes Wine de SailOver (jeu, `wineboot`, prérequis), car `environment()` le relit à chaque appel (`GR/wine.rs:107-113`). Documenté dans `voile/README.md` (exemple `err+all,+steamclient`).
+- Par défaut `err+all,fixme-all` (`GR/wine.rs:112`). Un fichier `winedebug` à la racine du runtime remplace cette valeur pour TOUTES les commandes Wine d'Obelisk (jeu, `wineboot`, prérequis), car `environment()` le relit à chaque appel (`GR/wine.rs:107-113`). Documenté dans `voile/README.md` (exemple `err+all,+steamclient`).
 - Pour un run avec identifiants, ne pas activer `+process`, `+relay`, `+server` ni `+all` : voile-wine trace la ligne de commande sous le canal `process` (`voile-wine/dlls/kernelbase/process.c:529`, `voile-wine/dlls/ntdll/unix/process.c:1248`). DÉDUIT : `+relay` et `+server` peuvent aussi l'afficher.
-- Sortie : seul le stderr du processus du jeu va dans le journal ; celui de `wineboot` est jeté (`GR/wine.rs:247-250`) ; celui des prérequis va dans `<prefix>/sailover-prerequisites.log` (`GR/wine.rs:380-427`).
+- Sortie : seul le stderr du processus du jeu va dans le journal ; celui de `wineboot` est jeté (`GR/wine.rs:247-250`) ; celui des prérequis va dans `<prefix>/obelisk-prerequisites.log` (`GR/wine.rs:380-427`).
 
 ### 3.4 Arguments Epic, un par un
 
@@ -141,7 +141,7 @@ LU dans `EK/client/launch.rs` sauf mention contraire. Aucune valeur n'est reprod
 
 | Argument | D'où vient la valeur | Ligne |
 |---|---|---|
-| exécutable | champ `launch_executable` du reçu `.sailover-install.json`, issu du manifeste de build Epic (MESURÉ : `Binaries/Win64/Launcher.exe`) | 129-147 |
+| exécutable | champ `launch_executable` du reçu `.obelisk-install.json`, issu du manifeste de build Epic (MESURÉ : `Binaries/Win64/Launcher.exe`) | 129-147 |
 | arguments du reçu | champ `launch_command`, découpé selon les règles Windows (MESURÉ : vide pour Rocket League) | 139-145, `SC/launch.rs:164-211` |
 | arguments du catalogue | attribut personnalisé `AdditionalCommandLine` du catalogue Epic, lu sur le réseau (inconnu pour Rocket League) | 255-258, 194-197 |
 | `-AUTH_LOGIN=unused` | constante | 199 |
@@ -167,8 +167,8 @@ Code d'échange n° 1, celui de la session du superviseur.
 Code d'échange n° 2 et jeton de propriété, ceux du jeu.
 - Le plan de lancement se fait dans le superviseur : contrôle de propriété, lecture du catalogue, puis `try_join!` du code d'échange et, si exigé, du jeton de propriété (`POST ecommerceintegration .../identities/<compte>/ownershipToken`, corps `nsCatalogItemId=<namespace>:<catalogItemId>`) (`EK/client/launch.rs:235-283`, `EK/auth.rs:228-257`).
 - Le code n° 2 entre dans `LaunchPlan.target.arguments`. `LaunchPlan` n'a volontairement pas de `Debug` (`EK/client/launch.rs:17-26`). Il voyage ensuite dans le message `Admission` (JSON, socketpair du helper, `GR/supervisor/exec.rs:27-35`), puis devient `argv` du processus Wine. Il est donc présent dans `argv` du processus Wine pendant la vie du jeu (DÉDUIT du fait qu'il fait partie de `Target.arguments`) ; je ne sais pas qui peut le lire sous macOS 27.
-- Le jeton de propriété est écrit dans un dossier `sailover-epic-ownership-*` en 0700, fichier `ownership.bin` (`GR/epic/launch.rs:242-256`). Seul son chemin Windows `Z:\...` est dans `argv`. Le dossier vit tant que `Host` vit : `run` le garde jusqu'à son retour, donc après la sortie du jeu et la synchro Cloud de sortie (`GR/epic/launch.rs:88-91,182-189`, `GR/supervisor/session.rs:599`).
-- Aucun des deux ne figure dans un reçu (`.sailover-install.json` : 12 clés, aucune ne porte un jeton ou un code ; `account_id` est un identifiant de compte, MESURÉ) ni dans le journal de session `Record` (`GR/supervisor/mod.rs:111-135`).
+- Le jeton de propriété est écrit dans un dossier `obelisk-epic-ownership-*` en 0700, fichier `ownership.bin` (`GR/epic/launch.rs:242-256`). Seul son chemin Windows `Z:\...` est dans `argv`. Le dossier vit tant que `Host` vit : `run` le garde jusqu'à son retour, donc après la sortie du jeu et la synchro Cloud de sortie (`GR/epic/launch.rs:88-91,182-189`, `GR/supervisor/session.rs:599`).
+- Aucun des deux ne figure dans un reçu (`.obelisk-install.json` : 12 clés, aucune ne porte un jeton ou un code ; `account_id` est un identifiant de compte, MESURÉ) ni dans le journal de session `Record` (`GR/supervisor/mod.rs:111-135`).
 
 ### 3.6 Ce qui se fait sans aucun identifiant
 
@@ -177,11 +177,11 @@ La préparation du prefix et des prérequis n'utilise aucun identifiant Epic : `
 ### 3.7 Exécutable lancé pour Rocket League
 
 MESURÉ.
-- Reçu `.sailover-install.json` du dossier d'installation (champs non secrets seulement) : `app_name=Sugar`, `platform=Windows`, `build_version=++Prime+Update60-CL-528869-pchotfix4`, `launch_executable=Binaries/Win64/Launcher.exe`, `launch_command` vide, pas de `deployment_id`, prérequis `ids=["EAC_Service"]`, `path=Binaries/Win64/EasyAntiCheat/EasyAntiCheat_EOS_Setup.exe`, `arguments="install e6bcca5b37d0457ca881aec508205542"`.
+- Reçu `.obelisk-install.json` du dossier d'installation (champs non secrets seulement) : `app_name=Sugar`, `platform=Windows`, `build_version=++Prime+Update60-CL-528869-pchotfix4`, `launch_executable=Binaries/Win64/Launcher.exe`, `launch_command` vide, pas de `deployment_id`, prérequis `ids=["EAC_Service"]`, `path=Binaries/Win64/EasyAntiCheat/EasyAntiCheat_EOS_Setup.exe`, `arguments="install e6bcca5b37d0457ca881aec508205542"`.
 - SHA-256 inchangés depuis le début de l'effort : `RocketLeague.exe` `ca3a9075...38fa`, `RocketLeague_EAC.exe` `903e7aba...14d1` (comparés à `evidence/game-sha256-start.txt`). `Launcher.exe` : `40d1bb2d02989907894d29d59769f51975ea9b930255696e49be1f61fd515eb9` (non présent dans le fichier de départ).
 - `EasyAntiCheat/Settings.json` : `executable=RocketLeague.exe`, `productid=e6bcca5b37d0457ca881aec508205542`, `sandboxid=9773aa1aa54f4f7b80e44bef04986cea`, `deploymentid=da32ae9c12ae40e8a112c52e1f17f3ba`, `wait_for_game_process_exit=false`, `hide_bootstrapper=false`, `hide_gui=false`.
 
-Donc SailOver lance `Launcher.exe`, jamais `RocketLeague.exe` ni `RocketLeague_EAC.exe` directement, depuis `Binaries/Win64`.
+Donc Obelisk lance `Launcher.exe`, jamais `RocketLeague.exe` ni `RocketLeague_EAC.exe` directement, depuis `Binaries/Win64`.
 
 Analyse statique de `Launcher.exe` (assembly .NET 1.0.0.0, société « Psyonix LLC »), IL décodé avec `dnfile` et `dncil` installés dans `EXP/tools/venv`, sans exécution. Logique de `Main` (RVA 8512) et de l'itérateur `LaunchOptions` (RVA 8880) :
 1. Le répertoire courant devient le dossier de l'assembly (`Environment.CurrentDirectory = dirname(Assembly.GetEntryAssembly().Location)`).
@@ -217,7 +217,7 @@ Conséquences. Le chemin protégé par défaut est `Launcher.exe` puis `RocketLe
 
 LU, `GR/wine.rs`.
 - Chemin : `LIB/Prefixes/<nom du dossier d'installation>` (`GR/wine.rs:52-55`, `GR/locations.rs:44`). Pour Rocket League : `epic-52edd447ec86748fc2afecc6cd67acc7748a5461-Windows` (MESURÉ), mode 0700 (`GR/files.rs:66-77`, appelé par `GR/wine.rs:219`).
-- `boot` (`GR/wine.rs:215-237`) : runtime absent donne `WineUnavailable` ; création du dossier ; `wineboot --init` si `system.reg` manque ; si le runtime porte Wine Mono et que le témoin `sailover-mono` diffère, `wineboot --update` (sauf création) puis écriture du témoin ; enfin `unlink_home_folders` transforme en dossiers vides les liens vers le home Mac laissés par d'anciens runtimes (`GR/wine.rs:266-282`).
+- `boot` (`GR/wine.rs:215-237`) : runtime absent donne `WineUnavailable` ; création du dossier ; `wineboot --init` si `system.reg` manque ; si le runtime porte Wine Mono et que le témoin `obelisk-mono` diffère, `wineboot --update` (sauf création) puis écriture du témoin ; enfin `unlink_home_folders` transforme en dossiers vides les liens vers le home Mac laissés par d'anciens runtimes (`GR/wine.rs:266-282`).
 - `wineboot` : `<runtime>/bin/wine wineboot --init|--update`, `env_clear`, environnement natif + Wine, stdio nuls ; puis `wineserver -w` avec le seul `WINEPREFIX` (`GR/wine.rs:241-260`). Échec si l'un des deux n'est pas un succès.
 - Le prefix est « préparé avant chaque lancement » (`CONTEXT.md`, entrée Wine prefix) ; `prepare` crée aussi le dossier des journaux (`GR/wine.rs:172-175`).
 - Suppression : `Installation::remove` fait `wineserver -k` puis `remove_dir_all`, sans suivre de lien (`GR/wine.rs:337-356`).
@@ -226,23 +226,23 @@ LU, `GR/wine.rs`.
 ### 4.2 Contenu mesuré du prefix de Rocket League (listing seulement)
 
 `LIB/Prefixes/epic-52edd447ec86748fc2afecc6cd67acc7748a5461-Windows` : 1 086 672 Ko (1,04 Gio), créé le 26 septembre à 22:37.
-- Racine : `.update-timestamp` (12 octets), `dosdevices/`, `drive_c/`, `sailover-mono`, `sailover-prerequisites`, `sailover-prerequisites.log`, `system.reg` (3,3 Mo), `user.reg` (66 Ko), `userdef.reg` (4 Ko).
+- Racine : `.update-timestamp` (12 octets), `dosdevices/`, `drive_c/`, `obelisk-mono`, `obelisk-prerequisites`, `obelisk-prerequisites.log`, `system.reg` (3,3 Mo), `user.reg` (66 Ko), `userdef.reg` (4 Ko).
 - `dosdevices/` : `c:` vers `../drive_c`, `z:` vers `/`, plus `d:` vers `/Volumes/VirtualBuddy_v2.2-417` et `d::` vers `/dev/rdisk13s1` (lecteurs détectés par `wineboot` au moment de la création, sans rapport avec le jeu).
 - `drive_c/` : `Program Files` (Common Files, Internet Explorer, Windows Media Player, Windows NT), `Program Files (x86)` (Common Files, `EasyAntiCheat_EOS` avec `EasyAntiCheat_EOS.exe`, Internet Explorer, Windows Media Player, Windows NT), `ProgramData/Microsoft`, `users/` (`Public`, `crossover`), `windows/`.
 - `drive_c/users/crossover/` : `AppData` (`Local` avec `Microsoft` et `Temp`, `LocalLow`, `Roaming` avec `EasyAntiCheat` et `Microsoft`), `Contacts`, `Desktop`, `Documents`, `Downloads`, `Favorites`, `Links`, `Music`, `Pictures`, `Saved Games`, `Searches`, `Videos`. Ce sont des dossiers réels, non des liens ; tous sont vides sauf `Pictures`, qui contient un sous-dossier `Screenshots`. Il n'y a pas de `Documents/My Games` : DÉDUIT, le prefix n'a jamais exécuté le jeu jusqu'au bout.
 - `AppData/Roaming/EasyAntiCheat/` : `service.log` et `e6bcca5b37d0457ca881aec508205542/da32ae9c12ae40e8a112c52e1f17f3ba/anticheatlauncher.log` (noms seulement ; contenu non lu).
-- Contenu des témoins SailOver (non secrets) : `sailover-mono` = `wine-mono-10.4.1` ; `sailover-prerequisites` = `epic:EAC_Service` ; `sailover-prerequisites.log` = trois lignes (`msync: bootstrapped mach port on wine-164e476-msync.`, `msync: up and running.`, `err:ntoskrnl:ZwLoadDriver failed to create driver ... winebth: c00000e5`).
+- Contenu des témoins Obelisk (non secrets) : `obelisk-mono` = `wine-mono-10.4.1` ; `obelisk-prerequisites` = `epic:EAC_Service` ; `obelisk-prerequisites.log` = trois lignes (`msync: bootstrapped mach port on wine-164e476-msync.`, `msync: up and running.`, `err:ntoskrnl:ZwLoadDriver failed to create driver ... winebth: c00000e5`).
 
 ### 4.3 Prérequis
 
 - Pour Epic, le prérequis vient du reçu : un programme sous l'installation, avec une ligne de commande, identifié `epic:<ids joints par virgule>`, ou `epic:<chemin>` si `ids` est vide (`GR/epic/windows.rs:52-77`). Un chemin qui sort de l'installation est ignoré.
 - Pour Rocket League : `Binaries/Win64/EasyAntiCheat/EasyAntiCheat_EOS_Setup.exe install e6bcca5b37d0457ca881aec508205542`, lancé par `wine <programme> install <productid>` avec pour répertoire de travail le dossier du programme (`GR/wine.rs:396-437`). Un `.cmd` ou `.bat` passerait par `wine cmd /c Z:\...`.
-- Chaque id ne tourne qu'une fois par prefix (témoin `sailover-prerequisites`, une ligne par id). Codes de réussite 0, 1638, 3010 ; délai 10 minutes puis `wineserver -k` ; un échec rejoue au lancement suivant et le jeu démarre quand même (`GR/wine.rs:25-33,362-393`). Un `wineserver -w` final attend la fin des processus de l'installeur.
+- Chaque id ne tourne qu'une fois par prefix (témoin `obelisk-prerequisites`, une ligne par id). Codes de réussite 0, 1638, 3010 ; délai 10 minutes puis `wineserver -k` ; un échec rejoue au lancement suivant et le jeu démarre quand même (`GR/wine.rs:25-33,362-393`). Un `wineserver -w` final attend la fin des processus de l'installeur.
 - MESURÉ : le service EAC est installé dans ce prefix (`Program Files (x86)/EasyAntiCheat_EOS`), id `epic:EAC_Service` enregistré.
 
 ### 4.4 Surcharges de DLL et registre
 
-- SailOver n'écrit aucune clé de registre elle-même : un grep de `crates/game-runtime/src` (hors tests) pour `reg`, `regedit`, `HKEY`, `winetricks` ne trouve que le test d'existence de `system.reg` (`GR/wine.rs:220`). Les réglages passent par des variables d'environnement. Pour Epic, `furnish` est le comportement par défaut du trait, qui ne fait rien (`GR/wine.rs:151-153`) ; Steam, lui, copie `steamclient.dll` et `steamclient64.dll` dans `Program Files (x86)/Steam` du prefix (`GR/steam/windows.rs:63-77`).
+- Obelisk n'écrit aucune clé de registre elle-même : un grep de `crates/game-runtime/src` (hors tests) pour `reg`, `regedit`, `HKEY`, `winetricks` ne trouve que le test d'existence de `system.reg` (`GR/wine.rs:220`). Les réglages passent par des variables d'environnement. Pour Epic, `furnish` est le comportement par défaut du trait, qui ne fait rien (`GR/wine.rs:151-153`) ; Steam, lui, copie `steamclient.dll` et `steamclient64.dll` dans `Program Files (x86)/Steam` du prefix (`GR/steam/windows.rs:63-77`).
 - `WINEDLLOVERRIDES` : `winemenubuilder.exe=d` (pas d'entrées de menu) ; `mshtml=` (pas d'invite Gecko) ; `mscoree` n'est neutralisé que si le runtime n'a pas de Wine Mono (`GR/wine.rs:94-103`).
 - Les DLL que Wine remplace ou ajoute viennent du runtime : voir 4.5.
 - Registre réel du prefix : non lu (section 0). DÉDUIT : `wineboot` enregistre le .NET de Wine Mono (`GR/wine.rs:224-226`) et l'installeur EAC enregistre son service.
@@ -250,18 +250,18 @@ LU, `GR/wine.rs`.
 ### 4.5 D3DMetal
 
 - Dans le runtime (MESURÉ, `LIB/Voile/current/lib/wine`) : `x86_64-windows/d3d10.dll`, `d3d11.dll`, `d3d12.dll`, `dxgi.dll`, `nvapi64.dll` datés du 10 juillet (DLL d'Apple), à côté des `wined3d.dll` de Wine datés du 26 septembre ; côté Unix, `x86_64-unix/d3d10.so`, `d3d11.so`, `d3d12.so`, `dxgi.so`, `nvapi64.so`, `nvngx-on-metalfx.so` sont des liens vers `../../external/libd3dshared.dylib` ; `lib/external/D3DMetal.framework` est présent. La partie `i386-windows` reste celle de Wine (D3DMetal ne couvre que le 64 bits).
-- Dans SailOver : `Config::d3dmetal()` teste `lib/external/libd3dshared.dylib` ; s'il existe, `CX_APPLEGPTK_LIBD3DSHARED_PATH` pointe dessus et `CX_ACTIVE_GRAPHICS_BACKEND=d3dmetal` (`GR/wine.rs:78-83,134-140`). Côté Wine, `voile-wine/dlls/ntdll/unix/loader.c:1443` lit la première, `dlls/win32u/d3dkmt.c:719` et `dlls/win32u/vulkan.c:3007` lisent la seconde.
-- `SAILOVER_GRAPHICS` n'est lue que par `voile/scripts/wine-dev.sh` (valeurs `wined3d` par défaut ou `d3dmetal`, qui superpose D3DMetal à un clone du runtime). Elle n'existe nulle part dans le code de SailOver (grep sur `crates`, `apps`, `scripts`, `packaging`). DÉDUIT : SailOver ne sait pas choisir wined3d à la place de D3DMetal, puisque les DLL sont déjà superposées dans le runtime installé.
+- Dans Obelisk : `Config::d3dmetal()` teste `lib/external/libd3dshared.dylib` ; s'il existe, `CX_APPLEGPTK_LIBD3DSHARED_PATH` pointe dessus et `CX_ACTIVE_GRAPHICS_BACKEND=d3dmetal` (`GR/wine.rs:78-83,134-140`). Côté Wine, `voile-wine/dlls/ntdll/unix/loader.c:1443` lit la première, `dlls/win32u/d3dkmt.c:719` et `dlls/win32u/vulkan.c:3007` lisent la seconde.
+- `OBELISK_GRAPHICS` n'est lue que par `voile/scripts/wine-dev.sh` (valeurs `wined3d` par défaut ou `d3dmetal`, qui superpose D3DMetal à un clone du runtime). Elle n'existe nulle part dans le code d'Obelisk (grep sur `crates`, `apps`, `scripts`, `packaging`). DÉDUIT : Obelisk ne sait pas choisir wined3d à la place de D3DMetal, puisque les DLL sont déjà superposées dans le runtime installé.
 - Le build Wine de Voile est x86-64 (`--enable-archs=i386,x86_64 --without-x --without-vulkan`, `voile/scripts/build.sh:33-34`) et fonctionne sous Rosetta : `bin/wine` et `bin/wineserver` sont des Mach-O x86_64 (MESURÉ, `lipo -archs`).
 
 ### 4.6 Rôle des scripts et du test de Voile
 
-LU dans `voile/scripts/*` et `voile/tests/d3d11-smoke.c`. Voile ne crée pas les prefix des jeux : c'est SailOver (`wine::boot`). Voile fournit le runtime et un moyen de le tester.
+LU dans `voile/scripts/*` et `voile/tests/d3d11-smoke.c`. Voile ne crée pas les prefix des jeux : c'est Obelisk (`wine::boot`). Voile fournit le runtime et un moyen de le tester.
 - `build.sh` : construit Wine pour x86-64 avec `--enable-archs=i386,x86_64 --disable-tests --without-x --without-gstreamer --without-sdl --without-vulkan` (lignes 33-34), exige Rosetta (`arch -x86_64 /usr/bin/true`, ligne 43), produit `build/stage`.
-- `install-dev.sh` : copie `build/stage` dans `LIB/Voile/current` (ou `$SAILOVER_LIBRARY_DIRECTORY/Voile/current`), pose les DLL de D3DMetal par-dessus `lib/` et copie `steamclient.dll` et `steamclient64.dll` dans `steam/`.
+- `install-dev.sh` : copie `build/stage` dans `LIB/Voile/current` (ou `$OBELISK_LIBRARY_DIRECTORY/Voile/current`), pose les DLL de D3DMetal par-dessus `lib/` et copie `steamclient.dll` et `steamclient64.dll` dans `steam/`.
 - `package.sh <version>` : construit, retire les infos de debug, ajoute D3DMetal après le `strip` (licence d'Apple), écrit `runtime.json`, crée `voile-<version>.tar.xz` et son SHA-256, puis vérifie l'archive extraite : `wineboot --init` dans un prefix neuf puis `cmd.exe` 64 bits et 32 bits avec `ver`, sous `WINEDEBUG=-all` et `WINEDLLOVERRIDES=mscoree,mshtml=;winemenubuilder.exe=d`. Refuse les modifications non commitées.
 - `publish.sh` : crée la release GitHub de la version. `import-d3dmetal.sh` : extrait les Redistributables de D3DMetal du disque du Game Porting Toolkit.
-- `wine-dev.sh` : lance le Wine de `build/stage` avec `WINEPREFIX=build/prefix` par défaut ; `SAILOVER_GRAPHICS=d3dmetal` superpose D3DMetal à un clone APFS du runtime et pose `CX_APPLEGPTK_LIBD3DSHARED_PATH` et `CX_ACTIVE_GRAPHICS_BACKEND=d3dmetal`. Il ne pose pas les autres variables de 3.2.
+- `wine-dev.sh` : lance le Wine de `build/stage` avec `WINEPREFIX=build/prefix` par défaut ; `OBELISK_GRAPHICS=d3dmetal` superpose D3DMetal à un clone APFS du runtime et pose `CX_APPLEGPTK_LIBD3DSHARED_PATH` et `CX_ACTIVE_GRAPHICS_BACKEND=d3dmetal`. Il ne pose pas les autres variables de 3.2.
 - `tests/d3d11-smoke.c` : crée un périphérique et une chaîne d'échange D3D11, présente 120 images et affiche l'adaptateur et le niveau de fonctionnalités ; se compile avec `x86_64-w64-mingw32-clang`. D'après le `README` de Voile, wined3d s'arrête à 10_1 et D3DMetal annonce « AMD Compatibility Mode » à 11_0. C'est un test d'acceptation graphique réutilisable pour un nouveau chemin, sans EAC ni identifiants.
 - Il n'y a pas d'autre test dans `voile/tests/`.
 
@@ -271,26 +271,26 @@ LU dans `voile/scripts/*` et `voile/tests/d3d11-smoke.c`. Voile ne crée pas les
 
 | Quoi | Où | Source |
 |---|---|---|
-| stderr de Wine pendant le jeu | `~/Library/Logs/SailOver/Epic/wine-<app_name>.log` (Rocket League : `wine-Sugar.log`, 297 octets, mode 0600, 26 sept 22:38 ; contenu non lu) | `GR/epic/windows.rs:19-24`, `GR/locations.rs:42`, `GR/supervisor/exec.rs:57-69` |
-| sortie des installeurs de prérequis | `<prefix>/sailover-prerequisites.log` (réécrit à chaque lancement qui en exécute un) | `GR/wine.rs:29,380` |
+| stderr de Wine pendant le jeu | `~/Library/Logs/Obelisk/Epic/wine-<app_name>.log` (Rocket League : `wine-Sugar.log`, 297 octets, mode 0600, 26 sept 22:38 ; contenu non lu) | `GR/epic/windows.rs:19-24`, `GR/locations.rs:42`, `GR/supervisor/exec.rs:57-69` |
+| sortie des installeurs de prérequis | `<prefix>/obelisk-prerequisites.log` (réécrit à chaque lancement qui en exécute un) | `GR/wine.rs:29,380` |
 | journal EAC | `<prefix>/drive_c/users/crossover/AppData/Roaming/EasyAntiCheat/<productid>/<deploymentid>/anticheatlauncher.log` et `service.log` (MESURÉ : fichiers présents) | `rocket-league-macos.md:19-25` |
 | journal de `Launcher.exe` | `Launcher.log` dans `Binaries/Win64`, seulement sur exception (IL) | section 3.7 |
-| journal de session | `LIB/EpicSessions/` (`journal::write`), socket de contrôle dans `/tmp/sailover-session-*/control` (0700) | `GR/supervisor/session.rs:420-447` |
-| manifeste Epic de diagnostic | `~/Library/Logs/SailOver/Epic/manifest-Sugar-Windows.json` et `.manifest` | MESURÉ (liste) |
+| journal de session | `LIB/EpicSessions/` (`journal::write`), socket de contrôle dans `/tmp/obelisk-session-*/control` (0700) | `GR/supervisor/session.rs:420-447` |
+| manifeste Epic de diagnostic | `~/Library/Logs/Obelisk/Epic/manifest-Sugar-Windows.json` et `.manifest` | MESURÉ (liste) |
 
-Le dossier `~/Library/Logs/SailOver/Epic` est en 0700, les journaux Wine en 0600. Le stdout du jeu est jeté (`GR/supervisor/exec.rs:82-84`).
+Le dossier `~/Library/Logs/Obelisk/Epic` est en 0700, les journaux Wine en 0600. Le stdout du jeu est jeté (`GR/supervisor/exec.rs:82-84`).
 
 ### 5.2 Lancer sans l'interface : ce qui existe et ce qui manque
 
-LU : il n'existe aucun CLI de lancement. Les binaires du dépôt sont `uniffi-bindgen` (`crates/sailover-bridge/src/bin/uniffi-bindgen.rs`), `sailover-steam-runtime-package` (`crates/game-runtime/Cargo.toml:34-36`, outil de paquetage), le helper `sailover-steam-host` (`crates/steam-native/src/bin/sailover-steam-host.rs`) et un exemple de sonde Cloud Steam (`crates/steam-native/examples/cloud_storage_probe.rs`, variables `SAILOVER_CLOUD_PROBE_*`). Les scripts `scripts/*.sh` construisent, testent, signent ou ouvrent l'application (`scripts/run.sh` fait `open` de `SailOver.app`) ; aucun ne lance un jeu. `README.md:98` : les tests « ne lancent pas de jeux ».
+LU : il n'existe aucun CLI de lancement. Les binaires du dépôt sont `uniffi-bindgen` (`crates/obelisk-bridge/src/bin/uniffi-bindgen.rs`), `obelisk-steam-runtime-package` (`crates/game-runtime/Cargo.toml:34-36`, outil de paquetage), le helper `obelisk-steam-host` (`crates/steam-native/src/bin/obelisk-steam-host.rs`) et un exemple de sonde Cloud Steam (`crates/steam-native/examples/cloud_storage_probe.rs`, variables `OBELISK_CLOUD_PROBE_*`). Les scripts `scripts/*.sh` construisent, testent, signent ou ouvrent l'application (`scripts/run.sh` fait `open` de `Obelisk.app`) ; aucun ne lance un jeu. `README.md:98` : les tests « ne lancent pas de jeux ».
 
 Quatre voies existent, de la plus fidèle à la plus légère.
-1. **L'application elle-même**, avec une bibliothèque isolée : `SAILOVER_LIBRARY_DIRECTORY` est lue dans `apps/macos/SailOver/App/AppIdentity.swift:11` (et ne change pas l'identifiant du Trousseau, `README.md:129`). Les emplacements sont dérivés par `sailoverLocations(library:bundle:home:)` (`AppIdentity.swift:21`, `GR/locations.rs:30-48`). C'est la seule voie qui exerce les étapes 1 à 22 sans code nouveau.
-2. **Le helper seul** : `sailover-steam-host game-exec` lit un `Admission` JSON sur stdin et fait `exec` (`crates/steam-native/tests/exec_game.rs:15-33` montre comment `Admission` est construit et envoyé avec `exec::send`). Il suffit de fournir l'environnement exact de 3.2 (le helper le transmet tel quel) et un `Admission` avec `executable=<runtime>/bin/wine`. Le build Debug est à `build/xcode/Build/Products/Debug/SailOver.app/Contents/Helpers/SteamNative/sailover-steam-host` (arm64, MESURÉ). Le helper doit tourner en arm64 natif, pas sous Rosetta.
+1. **L'application elle-même**, avec une bibliothèque isolée : `OBELISK_LIBRARY_DIRECTORY` est lue dans `apps/macos/Obelisk/App/AppIdentity.swift:11` (et ne change pas l'identifiant du Trousseau, `README.md:129`). Les emplacements sont dérivés par `obeliskLocations(library:bundle:home:)` (`AppIdentity.swift:21`, `GR/locations.rs:30-48`). C'est la seule voie qui exerce les étapes 1 à 22 sans code nouveau.
+2. **Le helper seul** : `obelisk-steam-host game-exec` lit un `Admission` JSON sur stdin et fait `exec` (`crates/steam-native/tests/exec_game.rs:15-33` montre comment `Admission` est construit et envoyé avec `exec::send`). Il suffit de fournir l'environnement exact de 3.2 (le helper le transmet tel quel) et un `Admission` avec `executable=<runtime>/bin/wine`. Le build Debug est à `build/xcode/Build/Products/Debug/Obelisk.app/Contents/Helpers/SteamNative/obelisk-steam-host` (arm64, MESURÉ). Le helper doit tourner en arm64 natif, pas sous Rosetta.
 3. **Le superviseur avec des services factices** : `lifecycle::serve::<Launch<S>>` est générique sur `Services` ; `FakeEpic` dans `GR/epic/launch/tests.rs:96-140` montre comment fournir un `LaunchPlan` sans réseau. Le harnais `EpicHarness` ré-entre le binaire de test comme superviseur jetable (`GR/supervisor/session/tests.rs:135-162,268-275`). Une implémentation `Services` « de laboratoire » est la couture prévue pour un lancement hors interface (section 7).
-4. **Wine seul** : `voile/scripts/wine-dev.sh <programme>` (runtime `voile/build/stage`, prefix `voile/build/prefix` ou `WINEPREFIX`, `SAILOVER_GRAPHICS=d3dmetal`) ou l'appel direct du `bin/wine` installé. Il faut alors reproduire à la main les variables de 3.2, car `wine-dev.sh` ne pose ni `WINEMSYNC`, ni `WINEDLLOVERRIDES`, ni `WINEDEBUG`. C'est la voie qu'ont utilisée les essais sans authentification (`rocket-league-macos.md:27-45`, copies APFS du prefix).
+4. **Wine seul** : `voile/scripts/wine-dev.sh <programme>` (runtime `voile/build/stage`, prefix `voile/build/prefix` ou `WINEPREFIX`, `OBELISK_GRAPHICS=d3dmetal`) ou l'appel direct du `bin/wine` installé. Il faut alors reproduire à la main les variables de 3.2, car `wine-dev.sh` ne pose ni `WINEMSYNC`, ni `WINEDLLOVERRIDES`, ni `WINEDEBUG`. C'est la voie qu'ont utilisée les essais sans authentification (`rocket-league-macos.md:27-45`, copies APFS du prefix).
 
-Ce qu'une exécution fidèle hors interface doit fournir : un `Locations` (bibliothèque, home, bundle), un reçu installé dont le compte est celui de la session, un runtime (`Voile/current` ou version épinglée), le helper arm64 et le bundle Rosetta (`Contents/Helpers/SailOver Rosetta.app`, MESURÉ présent dans le build Debug ; `GR/epic/launch.rs:229-238` le localise comme le grand-parent de `config.helper`, `GR/supervisor/rosetta.rs:7-9` ajoute `SailOver Rosetta.app/Contents/MacOS/SailOverRosetta`), et un code d'échange frais pour un compte qui possède le jeu.
+Ce qu'une exécution fidèle hors interface doit fournir : un `Locations` (bibliothèque, home, bundle), un reçu installé dont le compte est celui de la session, un runtime (`Voile/current` ou version épinglée), le helper arm64 et le bundle Rosetta (`Contents/Helpers/Obelisk Rosetta.app`, MESURÉ présent dans le build Debug ; `GR/epic/launch.rs:229-238` le localise comme le grand-parent de `config.helper`, `GR/supervisor/rosetta.rs:7-9` ajoute `Obelisk Rosetta.app/Contents/MacOS/ObeliskRosetta`), et un code d'échange frais pour un compte qui possède le jeu.
 
 ### 5.3 Comment les identifiants restent hors des journaux
 
@@ -324,13 +324,13 @@ Limite : rien n'empêche Wine de journaliser une ligne de commande si l'on activ
 | `windows_path` = `"Z:" + chemin` | `GR/wine.rs:296-298`, `GR/epic/launch.rs:268-271` | `Z:` est la racine du Mac ; dans un userland Linux, `Z:` serait la racine du Linux invité, donc le jeton de propriété et l'installation doivent y être visibles |
 | `unlink_home_folders` | `GR/wine.rs:262-282` | liens vers le home macOS laissés par d'anciens runtimes |
 | `wineboot`, `wineserver -w/-k` lancés en commandes hôte | `GR/wine.rs:241-260,455-459,512-522` | à exécuter dans l'invité pour un moteur Linux |
-| `end_orphans` par `lsof` + `kill` sur les fichiers sous `Voile` | `GR/wine.rs:466-508`, appelé depuis `GR/supervisor/session.rs:286-288` (dossier du runtime) et `crates/sailover-bridge/src/locations.rs:52-57` (dossier `Voile`, au démarrage de l'application, `AppLifecycle.swift:27`) | repose sur des Mach-O mappés depuis `Voile/` |
+| `end_orphans` par `lsof` + `kill` sur les fichiers sous `Voile` | `GR/wine.rs:466-508`, appelé depuis `GR/supervisor/session.rs:286-288` (dossier du runtime) et `crates/obelisk-bridge/src/locations.rs:52-57` (dossier `Voile`, au démarrage de l'application, `AppLifecycle.swift:27`) | repose sur des Mach-O mappés depuis `Voile/` |
 | `Installation::of` (plateforme `windows`) et `runtime()` | `GR/wine.rs:311-332` | le sélecteur de runtime est ici, figé sur `locations.voile` |
 | Installation, version et checksum de Voile | `GR/voile.rs`, `voile-release.json`, `GR/sessions.rs:784-822` | archive `tar.xz` épinglée, `Voile/current` de développement |
 | `Request.wine`, `Configuration.prefix`, `runs_in`, `validate` | `GR/epic/mod.rs:93-164,233-234` | `Request.wine` est le seul champ transporté qui dit « ce build Windows tourne dans Wine » ; `Configuration.prefix` le double côté Cloud |
 | `Handover::voile/prepare` | `GR/epic/content.rs:369-401` | installe Voile et prépare le prefix avant le code d'échange |
 | `Launch::wine()` et les arrêts qui en dépendent | `GR/supervisor/session.rs:134-136,286-288,312-314,482` | `stop_game` appelle `wine::stop` |
-| Droits du helper (`allow-dyld-environment-variables`, `disable-library-validation`) et refus d'être traduit | `packaging/steam-host.entitlements`, `SN/bin/sailover-steam-host.rs:11-13` | contraintes du binaire qui fait `exec` |
+| Droits du helper (`allow-dyld-environment-variables`, `disable-library-validation`) et refus d'être traduit | `packaging/steam-host.entitlements`, `SN/bin/obelisk-steam-host.rs:11-13` | contraintes du binaire qui fait `exec` |
 
 ### 6.3 Proposition d'interface minimale
 
@@ -360,7 +360,7 @@ pub(crate) trait Engine: Send + Sync {
     fn profile(&self) -> PathBuf;                               // wine::profile(prefix)
     /// Termine tous les processus du prefix.
     fn stop(&self);                                             // wine::stop
-    /// Termine les processus qu'un SailOver mort a laissés. Retourne leur nombre.
+    /// Termine les processus qu'un Obelisk mort a laissés. Retourne leur nombre.
     fn end_orphans(&self) -> usize;                             // wine::end_orphans
 }
 
@@ -374,7 +374,7 @@ pub(crate) enum EngineConfig {
 
 Branchements, dans l'ordre où je les ferais.
 1. `Request.wine: Option<wine::Config>` (`GR/epic/mod.rs:233-234`) devient `engine: Option<EngineConfig>` ; `Configuration.prefix` reste (racine Cloud, `runs_in` compare avec `engine.prefix()`).
-2. Sélecteur de runtime : `Installation::runtime` (`GR/wine.rs:330-332`) retourne un `EngineConfig`. Choix proposé : un témoin dans le prefix (`sailover-engine`) ou, en développement, un dossier `Engines/linux-fex/current` qui prime, sur le modèle de `Voile/current` (`GR/voile.rs:21,65-73`). Ajouter `engines` à `Locations` (`GR/locations.rs:7-28`) et à son miroir UniFFI (`crates/sailover-bridge/src/locations.rs:7-28,31-50,59-77`), puis régénérer les liaisons Swift (`scripts/build-rust.sh`).
+2. Sélecteur de runtime : `Installation::runtime` (`GR/wine.rs:330-332`) retourne un `EngineConfig`. Choix proposé : un témoin dans le prefix (`obelisk-engine`) ou, en développement, un dossier `Engines/linux-fex/current` qui prime, sur le modèle de `Voile/current` (`GR/voile.rs:21,65-73`). Ajouter `engines` à `Locations` (`GR/locations.rs:7-28`) et à son miroir UniFFI (`crates/obelisk-bridge/src/locations.rs:7-28,31-50,59-77`), puis régénérer les liaisons Swift (`scripts/build-rust.sh`).
 3. `Handover::prepare` et `voile()` (`GR/epic/content.rs:369-401`) appellent `Engine::prepare` et l'installation du moteur correspondant ; `Canceller::install_runtime` (`GR/sessions.rs:784-810`) devient générique sur le moteur.
 4. `windows_target` (`GR/epic/launch.rs:258-274`) appelle `Engine::target` et `Engine::guest_path` pour `-epicovt`. Il retourne `engine.architecture()`.
 5. `Launch::wine()` (`GR/supervisor/session.rs:134-136`) devient `engine()` ; `stop_game` et `terminated` appellent `Engine::stop` et `end_orphans`.
@@ -387,7 +387,7 @@ Chemin le plus court pour un essai de laboratoire (sans toucher au superviseur) 
 ### 6.4 Autres points de vigilance pour le branchement
 
 - Wine Mono : `Launcher.exe` est managé. Soit l'invité embarque Wine Mono (équivalent de `Voile/current/share/wine/mono/wine-mono-10.4.1`, `GR/wine.rs:86-92`), soit l'essai lance `RocketLeague_EAC.exe` directement avec les arguments qu'aurait passés `Launcher.exe` (section 3.7, reproduit sa logique par défaut sans modifier de binaire ; décision à prendre par l'équipe).
-- Visibilité des fichiers dans l'invité : l'installation (`Games/Epic/...`), le fichier de jeton de propriété (`/tmp/sailover-epic-ownership-*/ownership.bin`) et le prefix doivent être joignables par le jeu. Aujourd'hui `Z:` les expose via la racine du Mac.
+- Visibilité des fichiers dans l'invité : l'installation (`Games/Epic/...`), le fichier de jeton de propriété (`/tmp/obelisk-epic-ownership-*/ownership.bin`) et le prefix doivent être joignables par le jeu. Aujourd'hui `Z:` les expose via la racine du Mac.
 - Sauvegardes Cloud : la synchro EGS lit le profil Windows côté hôte (`GR/epic/mod.rs:120-129`). Un prefix dans un rootfs invité doit rester accessible à l'hôte, ou la synchro doit être désactivée par un `Launch::cloud` qui retourne `None` (`GR/supervisor/session.rs:144-147`).
 - Pages mémoire de 16 Kio de l'hôte : sujet de l'équipe FEX/Darwin, non traité ici.
 
@@ -408,9 +408,9 @@ Mécanisme décrit seulement : rien n'a été lancé ni écrit. Objectif : un es
 - Une session Epic vivante pour ce compte, d'où le code d'échange n° 2 et, si le catalogue l'exige, le jeton de propriété (`EK/client/launch.rs:183-188`).
 - Une porte Begin ouverte si l'on passe par le superviseur (`GR/supervisor/session.rs:569-571`).
 
-### 7.2 Mécanisme A (recommandé pour la première session) : SailOver comme courtier d'identifiants
+### 7.2 Mécanisme A (recommandé pour la première session) : Obelisk comme courtier d'identifiants
 
-L'application SailOver, lancée par le joueur, détient déjà la session (Trousseau, jeton de rafraîchissement). Le moteur de laboratoire est branché comme en 6.3 et choisi par un témoin ou un dossier `Engines/.../current`. Le joueur clique Launch. Aucune valeur secrète n'apparaît dans une commande, un fichier de l'essai ou un rapport ; la boîte de dialogue du Trousseau, s'il y en a une, est celle du joueur. L'essai ne collecte que des faits non secrets : phase de session, code de sortie, codes du lanceur EAC (206, 208, 210, ...), durées, journal du moteur. Inconvénient : pas de scénarisation en ligne de commande.
+L'application Obelisk, lancée par le joueur, détient déjà la session (Trousseau, jeton de rafraîchissement). Le moteur de laboratoire est branché comme en 6.3 et choisi par un témoin ou un dossier `Engines/.../current`. Le joueur clique Launch. Aucune valeur secrète n'apparaît dans une commande, un fichier de l'essai ou un rapport ; la boîte de dialogue du Trousseau, s'il y en a une, est celle du joueur. L'essai ne collecte que des faits non secrets : phase de session, code de sortie, codes du lanceur EAC (206, 208, 210, ...), durées, journal du moteur. Inconvénient : pas de scénarisation en ligne de commande.
 
 ### 7.3 Mécanisme B : lanceur de laboratoire lisant un fichier d'environnement
 
@@ -418,7 +418,7 @@ Un petit binaire (exemple ou test de `game-runtime`, jamais ajouté à l'applica
 
 Tous les noms de variables et de clés ci-dessous sont des propositions : rien de tel n'existe dans le dépôt.
 
-1. Entrée : le CHEMIN d'un fichier d'environnement, passé par variable (par exemple `SAILOVER_LAB_ENV_FILE`) ou par argument : le chemin, jamais les valeurs. Le fichier est écrit par le joueur, jamais par un agent, hors du dépôt et hors de `EXP` (par exemple sous `~/.config/sailover-lab/`), mode 0600.
+1. Entrée : le CHEMIN d'un fichier d'environnement, passé par variable (par exemple `OBELISK_LAB_ENV_FILE`) ou par argument : le chemin, jamais les valeurs. Le fichier est écrit par le joueur, jamais par un agent, hors du dépôt et hors de `EXP` (par exemple sous `~/.config/obelisk-lab/`), mode 0600.
 2. Contenu (noms de clés seulement) : `EPIC_AUTH_CODE` (code d'autorisation à usage unique obtenu par le joueur sur la page de connexion Epic, que `Client::sign_in` accepte déjà en entrée, `EK/client.rs:63-68`), ou `EPIC_ACCOUNT_ID` + jeton de rafraîchissement pour `Client::restore` (`EK/client.rs:70-74`). Le répertoire d'installation et le moteur sont des arguments non secrets.
 3. Contrôles avant lecture : le lanceur refuse si le fichier a des bits groupe ou autres, s'il est dans une copie de travail git, ou s'il n'appartient pas à l'utilisateur courant. Même esprit que le contrôle du dossier de socket (`GR/supervisor/client.rs:453-461`).
 4. Flux : lecture du fichier en mémoire (zéroïsée ensuite), `sign_in` ou `restore`, puis `launch_plan` (`EK/client/launch.rs:150-225`) qui produit `LaunchPlan` avec `-AUTH_PASSWORD=` et le jeton de propriété ; `Engine::target` ; écriture de l'`Admission` sur le stdin du helper `game-exec` par un tube, jamais sur sa ligne de commande.
@@ -429,7 +429,7 @@ Tous les noms de variables et de clés ci-dessous sont des propositions : rien d
 
 ### 7.4 Précautions communes
 
-- Travailler sur un clone APFS du prefix et utiliser une bibliothèque isolée (`SAILOVER_LIBRARY_DIRECTORY`), pour ne pas toucher `LIB/Prefixes/...` ni les verrous `EpicSessions/` d'un SailOver en cours.
+- Travailler sur un clone APFS du prefix et utiliser une bibliothèque isolée (`OBELISK_LIBRARY_DIRECTORY`), pour ne pas toucher `LIB/Prefixes/...` ni les verrous `EpicSessions/` d'un Obelisk en cours.
 - Ne jamais passer `-noeac` ni `-offline` (hors objectif) ; ne pas modifier `Settings.json`, `RocketLeague_EAC.exe` ni `Launcher.exe` ; vérifier les hash avant et après (`evidence/game-sha256-start.txt`).
 - Le code d'échange n° 2 est dans `argv` du processus Wine pendant la vie du jeu : pendant l'essai, ne lancer aucun outil de diagnostic qui liste ou journalise les lignes de commande des processus (`ps`, `lsof -p`, traces `dtruss`, rapports de plantage joints) et les traiter comme sensibles s'ils existent.
 - Les chaînes `-epicusername=` et `-epicuserid=` identifient le joueur : à traiter comme sensibles dans les rapports.
@@ -462,4 +462,4 @@ Tous les noms de variables et de clés ci-dessous sont des propositions : rien d
 
 ## Annexe : mesures exécutées (toutes en lecture seule)
 
-`ls`/`du` de `LIB`, `LIB/Voile`, `LIB/Prefixes`, `LIB/Games/Epic` et du prefix de Rocket League ; `cat` de `Voile/v26.3.0-4/runtime.json` et des témoins `sailover-*` ; `file`/`lipo -archs` sur `bin/wine`, `bin/wineserver`, `libd3dshared.dylib`, helper ; `codesign -d --entitlements` sur le helper du build Debug ; `shasum -a 256` sur `Launcher.exe`, `RocketLeague.exe`, `RocketLeague_EAC.exe` ; lecture des champs non secrets de `.sailover-install.json` par script (le champ `account_id` n'est pas imprimé) ; lecture de `EasyAntiCheat/Settings.json` ; `strings` et extraction des chaînes UTF-16 de `Launcher.exe` ; décodage IL de `Launcher.exe` avec `dnfile` et `dncil` (`pip install` dans `EXP/tools/venv`, seul changement fait sous `EXP` ; le script de décodage et sa sortie sont restés dans le scratchpad de session) ; `git show 7d4d22f^:docs/...` et `git ls-tree` pour les anciens documents ; `grep` du code de SailOver, de voile et de voile-wine. Aucun `git commit`, `push`, `branch` ni `stash` ; `git status` du dépôt `sailover` reste `?? docs/` ; `voile` et `voile-wine` sont propres. Aucune sortie contenant un secret n'a été produite.
+`ls`/`du` de `LIB`, `LIB/Voile`, `LIB/Prefixes`, `LIB/Games/Epic` et du prefix de Rocket League ; `cat` de `Voile/v26.3.0-4/runtime.json` et des témoins `obelisk-*` ; `file`/`lipo -archs` sur `bin/wine`, `bin/wineserver`, `libd3dshared.dylib`, helper ; `codesign -d --entitlements` sur le helper du build Debug ; `shasum -a 256` sur `Launcher.exe`, `RocketLeague.exe`, `RocketLeague_EAC.exe` ; lecture des champs non secrets de `.obelisk-install.json` par script (le champ `account_id` n'est pas imprimé) ; lecture de `EasyAntiCheat/Settings.json` ; `strings` et extraction des chaînes UTF-16 de `Launcher.exe` ; décodage IL de `Launcher.exe` avec `dnfile` et `dncil` (`pip install` dans `EXP/tools/venv`, seul changement fait sous `EXP` ; le script de décodage et sa sortie sont restés dans le scratchpad de session) ; `git show 7d4d22f^:docs/...` et `git ls-tree` pour les anciens documents ; `grep` du code d'Obelisk, de voile et de voile-wine. Aucun `git commit`, `push`, `branch` ni `stash` ; `git status` du dépôt `obelisk` reste `?? docs/` ; `voile` et `voile-wine` sont propres. Aucune sortie contenant un secret n'a été produite.

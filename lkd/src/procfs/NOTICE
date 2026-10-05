@@ -1,4 +1,4 @@
-procfs module of LKD (Linux kernel on Darwin), private research code for the SailOver project.
+procfs module of LKD (Linux kernel on Darwin), private research code for the Obelisk project.
 
 No block of HyperLinux is copied into this module. HyperLinux src/proc_emulation.c, proc_names.c and device.c
 were read as a reference for which paths programs open (Apache-2.0, Copyright 2025 Moritz Angermann

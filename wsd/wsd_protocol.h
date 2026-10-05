@@ -1,5 +1,5 @@
 /*
- * wsd_protocol.h - wire format of the SailOver window server (wsd). See PROTOCOL.md.
+ * wsd_protocol.h - wire format of the Obelisk window server (wsd). See PROTOCOL.md.
  *
  * Every message: struct wsd_hdr followed by `len` payload bytes (len <= WSD_MAX_PAYLOAD).
  * All fields little-endian, fixed width, naturally aligned; the same layout holds for a

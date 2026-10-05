@@ -1,5 +1,5 @@
 /*
- * wsd.m - SailOver window server spike: native arm64 Cocoa process that owns NSWindows,
+ * wsd.m - Obelisk window server spike: native arm64 Cocoa process that owns NSWindows,
  * presents client frames from shared memory through Metal, and forwards input events.
  * Wire format: wsd_protocol.h, PROTOCOL.md.
  *
@@ -259,7 +259,7 @@ static OSStatus audio_render(void *ref, AudioUnitRenderActionFlags *flags, const
 @end
 
 /* The screen with the menu bar: the client's display, and the origin of the pixel coordinates wsd exchanges with it.
- * NSScreen.mainScreen is the screen of the key window, which moves (2026-10-04: with SailOver on the MacBook's screen,
+ * NSScreen.mainScreen is the screen of the key window, which moves (2026-10-04: with Obelisk on the MacBook's screen,
  * Rocket League got 3024x1964 while its window was on a 2560x1440 one, and its picture overflowed). */
 static NSScreen *primary_screen(void) {
   return NSScreen.screens.firstObject ?: NSScreen.mainScreen;
@@ -1363,7 +1363,7 @@ static CAMetalLayer *make_metal_layer(void) {
 }
 @end
 
-/* The application menu: the bundle's name (SailOver starts wsd from a bundle named after the game), Hide and Quit. */
+/* The application menu: the bundle's name (Obelisk starts wsd from a bundle named after the game), Hide and Quit. */
 static void make_menu(void) {
   NSString *name = NSBundle.mainBundle.infoDictionary[@"CFBundleName"] ?: NSProcessInfo.processInfo.processName;
   BOOL fr = [NSLocale.preferredLanguages.firstObject hasPrefix:@"fr"];

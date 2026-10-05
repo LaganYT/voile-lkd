@@ -82,7 +82,7 @@ int lkd_family_create(uint32_t first_pid)
     g_hdr->ntids = FAM_MAX_TIDS;
     atomic_store(&g_hdr->next_pid, (int32_t)(first_pid ? first_pid : 2));
     const lkd_config *c = lkd_config_get();
-    snprintf(g_hdr->hostname, sizeof g_hdr->hostname, "%s", c->hostname ? c->hostname : "sailover");
+    snprintf(g_hdr->hostname, sizeof g_hdr->hostname, "%s", c->hostname ? c->hostname : "obelisk");
     snprintf(g_hdr->domainname, sizeof g_hdr->domainname, "(none)"); /* Linux default UTS domainname */
     pthread_mutex_unlock(&g_create_mutex);
     return 0;

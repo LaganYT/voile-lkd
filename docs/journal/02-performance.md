@@ -4,7 +4,7 @@ Ce document mesure où passe le temps dans une image, dans la latence d'entrée 
 moteur Linux. Il chiffre ensuite chaque couche de traduction qu'on pourrait retirer ou simplifier. C'est une analyse :
 rien n'est décidé, et les correctifs proposés en fin de document ne sont pas écrits.
 
-Machine : Apple M5 Max, macOS 27.0.1, écran jusqu'à 240 Hz. Runtime Voile `v26.3.0-8` (SailOver `a853ad2`), avec
+Machine : Apple M5 Max, macOS 27.0.1, écran jusqu'à 240 Hz. Runtime Voile `v26.3.0-8` (Obelisk `a853ad2`), avec
 `fexdarwin-run` et wsd remplacés par les versions instrumentées décrites plus bas. Le jeu est limité à 60 i/s.
 
 ## Résumé
@@ -52,14 +52,14 @@ Machine : Apple M5 Max, macOS 27.0.1, écran jusqu'à 240 Hz. Runtime Voile `v26
   `fexdarwin-run`, ainsi que l'occupation du GPU (`Device Utilization %` de l'IOAccelerator). Il lit ces chiffres par
   `proc_pidinfo` et IOKit, sans suspendre de thread, à la différence de `sample`.
 - **Sonde de latence de wsd.** La première entrée de test (`wsdctl tap`) l'active maintenant, alors qu'il fallait
-  avant `WSD_LATENCY_PROBE` dans l'environnement de wsd, que le lanceur de SailOver ne transmet pas.
+  avant `WSD_LATENCY_PROBE` dans l'environnement de wsd, que le lanceur d'Obelisk ne transmet pas.
 - **`tests/bench/winbench.c`**. Coût par appel des traversées d'un jeu Windows : horloge, `SwitchToThread`, attente et
   signal d'événement, création d'objet, section critique, lecture de fichier, aller-retour entre deux threads, calcul,
   memcpy. `winbench N TEST` lance un seul test, pour que le profil ne voie que ses appels.
 - **`tests/bench/missbench.c`**. Coût d'un `GetFileAttributesW` sur un fichier absent, et sur un fichier présent mais
   écrit avec une autre casse.
 
-Session mesurée : lancement depuis SailOver, puis menu (20 flèches haut/bas envoyées par `wsdctl`), puis Free Play
+Session mesurée : lancement depuis Obelisk, puis menu (20 flèches haut/bas envoyées par `wsdctl`), puis Free Play
 (environ 60 s de jeu, puis 8 bascules de caméra balle par la touche Espace), retour au menu et sortie par le menu.
 Aucune partie en ligne. Journaux : dossier `session1` de l'espace de travail de la session (non versionné).
 
@@ -105,8 +105,8 @@ La cadence tient : sur 14 820 présentations, l'intervalle est de 16,6 à 16,7 m
 ## Latence d'entrée
 
 Méthode. `wsdctl tap` envoie une touche à wsd, qui la date. La sonde compare ensuite chaque image reçue à celle
-d'avant l'entrée, et date la première qui change nettement. Le pilote `winesailover.drv` date de son côté la lecture
-de l'évènement et son envoi à Wine (`WINE_SAILOVER_LATENCY=1`).
+d'avant l'entrée, et date la première qui change nettement. Le pilote `wineobelisk.drv` date de son côté la lecture
+de l'évènement et son envoi à Wine (`WINE_OBELISK_LATENCY=1`).
 
 | Étape | Menu | Free Play |
 |---|---|---|
@@ -177,7 +177,7 @@ Coût d'une recherche de fichier (`missbench`, 200 à 2 000 appels de `GetFileAt
 
 Même programme sur le moteur Linux et sous le Wine macOS de Voile (x86-64 sous Rosetta), dans un préfixe de test.
 
-| Appel | Moteur Linux | Wine macOS, msync (réglage de SailOver) | Wine macOS sans msync |
+| Appel | Moteur Linux | Wine macOS, msync (réglage d'Obelisk) | Wine macOS sans msync |
 |---|---|---|---|
 | `QueryPerformanceCounter` | 150 ns | 48 ns | 48 ns |
 | `SwitchToThread` | 1 256 ns | 226 ns | 230 ns |
@@ -208,7 +208,7 @@ Un appel système LKD de base coûte environ 0,15 µs (`clock_gettime`). Les app
 | **ntsync dans LKD (`/dev/ntsync`)** | Attente ou signal = environ 11 µs et un aller-retour avec wineserver. Aller-retour entre deux fils : 35 µs (contre 5,9 µs avec msync sous macOS). Environ 26 000 requêtes/s en Free Play, de types inconnus. | Un périphérique `/dev/ntsync` dans LKD. Wine et wineserver sont déjà compilés avec ntsync (`HAVE_LINUX_NTSYNC_H`). Les objets doivent être partagés entre processus hôtes : état en mémoire partagée, fds passés par SCM_RIGHTS, WAIT_ALL atomique par instance du périphérique, attentes interruptibles par les signaux LKD. | Moyen. Le point délicat est le multiprocessus, et il ne doit rien changer à ce que voit EAC. | Si la plupart des requêtes sont des waits, des sets et des resets : environ 10 µs par appel. Jusqu'à 0,2 à 0,3 s de fil bloqué par seconde en moins, et une partie des 12 à 28 % de CPU de wineserver. À décider après le comptage des requêtes. |
 | **Présentation (wsd)** | 15,6 ms entre soumission et affichage, sur un écran de 120/240 Hz. | D'abord dater chaque étape dans wsd : tick du display link, encodage, `presentedTime`. Pistes : présenter dès la fin de la fence sans attendre le tick, n'utiliser que 2 drawables, et vérifier si le plein écran natif (sans compositeur) est possible pour une fenêtre plein écran. | Faible à moyen (cadence, image en arrière) | Estimé de 4 à 10 ms de latence. |
 | **D3D11 dans le même processus (thunk FEX vers DXMT)** | Le serveur de rendu prend 6,5 ms de CPU par image (décodage et appels DXMT). Ce coût serait déplacé, pas supprimé. Le passage entre processus coûte surtout l'attente de fence (0,5 ms en médiane) et les réveils de l'anneau. | `SetThunkHandler` et des stubs `0F 3F` dans fexdarwin (aucun gestionnaire n'est installé aujourd'hui : un `0F 3F` planterait le JIT). Il faudrait aussi charger le décodeur Neptune, DXMT et Metal dans chaque `fexdarwin-run`, et les rendre sûrs vis-à-vis des forks. La version la moins chère garde l'anneau Neptune et remplace seulement le transport vtest. | Élevé : Metal dans un processus qui fait des forks hôtes, plantage commun avec le jeu, et 813 commandes générées dont le générateur n'est pas versionné. | Faible à 60 i/s : moins d'une milliseconde de latence par image. Utile seulement si un jour le serveur de rendu sature (cadence au-delà de 60 i/s). |
-| **Parties Unix natives (`nptunix`, `winesailover`) par thunk** | Non isolé dans le profil, mais petit. Le pilote transmet une touche en 0,05 ms. Les tempêtes SMC de `nptunix` sont réglées depuis le relinkage en pages de 16 Kio. | Les mêmes thunks que ci-dessus. | Moyen | Faible. |
+| **Parties Unix natives (`nptunix`, `wineobelisk`) par thunk** | Non isolé dans le profil, mais petit. Le pilote transmet une touche en 0,05 ms. Les tempêtes SMC de `nptunix` sont réglées depuis le relinkage en pages de 16 Kio. | Les mêmes thunks que ci-dessus. | Moyen | Faible. |
 | **wineserver natif arm64** | 12 % d'un cœur en Free Play, 28 % au menu (anomalie comprise), soit environ 5 µs de serveur par requête. | Porter wineserver sur Darwin en gardant la sémantique des fds et de la mémoire partagée de LKD vue par les invités. Gros chantier. | Élevé | Faible une fois ntsync en place, qui supprime la plupart des requêtes. Ne se justifie pas. |
 | **Cache de code FEX sur disque** | JIT de moins de 0,1 s sur tout un démarrage, et environ 0,5 ms/s en jeu. | Le `DiskCache` de FEX existe, désactivé par défaut. Pour Darwin, il lit la mémoire invitée sans `G2H` (`DiskCache.cpp:566-578`, `Core.cpp:1029`). | Moyen | Presque nul. À abandonner. |
 | **Assertions de FEXCore** (`-DENABLE_ASSERTIONS=ON` dans `fexdarwin/scripts/build.sh`) | Le passage `IRValidation` tourne à chaque compilation. Le JIT est négligeable, donc le coût aussi. | `OFF` en Release. | Faible, mais on perd des contrôles. | Négligeable. |
@@ -232,7 +232,7 @@ jeu dépasse 60 i/s et que le serveur de rendu devient la limite.
 
 Correctifs : LKD `ad12111` (`FS_IOC_GETFLAGS` répond casefold pour un dossier d'un volume insensible à la casse) et
 voile-wine `87a1c39b` (sur un tel dossier, un nom 8.3 absent ne fait plus relire le dossier). Le lancement se fait
-depuis SailOver, sans profil, comme la mesure de référence de 17:22.
+depuis Obelisk, sans profil, comme la mesure de référence de 17:22.
 
 | Étape | Avant (17:22) | Après (21:19) |
 |---|---|---|
@@ -531,7 +531,7 @@ Ce qu'il faut faire au prochain incident :
 **Bug de wsd sur deux écrans.** Le `HELLO` de wsd donne la taille de `NSScreen.mainScreen`, l'écran de la fenêtre
 active. Avec l'écran du MacBook allumé, Rocket League a reçu 3024x1964 alors que sa fenêtre était sur l'écran à
 2560x1440, et son image dépassait. Corrigé dans `6a197ac` : wsd donne l'écran de la barre des menus, qui est
-déjà l'origine de ses coordonnées. Vérifié avec SailOver sur l'écran du MacBook : le jeu reçoit 2560x1440.
+déjà l'origine de ses coordonnées. Vérifié avec Obelisk sur l'écran du MacBook : le jeu reçoit 2560x1440.
 
 ## Mesures suivantes
 
@@ -545,11 +545,11 @@ déjà l'origine de ses coordonnées. Vérifié avec SailOver sur l'écran du Ma
 ## Reproduire
 
 - Profil : `FEXDARWIN_PROFILE=1` (et `FEXDARWIN_HITCH_LOG=1`, au choix) dans `engine/fexdarwin.env` ; ajouter
-  `guest WINE_SAILOVER_LATENCY=1` pour les heures du pilote. Les lignes vont dans `~/Library/Logs/SailOver/Epic/wine-<jeu>.log`.
+  `guest WINE_OBELISK_LATENCY=1` pour les heures du pilote. Les lignes vont dans `~/Library/Logs/Obelisk/Epic/wine-<jeu>.log`.
 - Fils natifs et GPU : `clang -O2 -o engine-top tools/dev/engine-top.c -framework IOKit -framework CoreFoundation`,
   puis `engine-top 5`.
-- Latence : au menu, `wsdctl $TMPDIR/sailover-engine-<pid>/wsd.sock tap 56` (Maj, active la sonde), puis
+- Latence : au menu, `wsdctl $TMPDIR/obelisk-engine-<pid>/wsd.sock tap 56` (Maj, active la sonde), puis
   `tap 125`/`tap 126`. En Free Play, `tap 49` (caméra balle). Lignes `wsd: probe:` dans le journal.
 - Bancs d'essai : compiler avec `x86_64-w64-mingw32-clang -O2` (llvm-mingw de Voile). Les lancer par
-  `crates/game-runtime/src/linux_engine/launch.sh` de SailOver, sous `run-with-timeout.sh`, puis vérifier
+  `crates/game-runtime/src/linux_engine/launch.sh` d'Obelisk, sous `run-with-timeout.sh`, puis vérifier
   `pgrep -x fexdarwin-run`.

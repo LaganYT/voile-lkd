@@ -17,7 +17,7 @@ Date : 2026-10-02. Auteur : module task.
 
 ## procfs
 
-8. `uname` : `release` vaut `6.12.0-lkd`, `version` `#1 SMP PREEMPT_DYNAMIC LKD`, `nodename` le nom de la famille (`sailover` par défaut). Utiliser `lkd_task_uname` pour `/proc/sys/kernel/osrelease`, `/proc/sys/kernel/hostname` et `/proc/version`.
+8. `uname` : `release` vaut `6.12.0-lkd`, `version` `#1 SMP PREEMPT_DYNAMIC LKD`, `nodename` le nom de la famille (`obelisk` par défaut). Utiliser `lkd_task_uname` pour `/proc/sys/kernel/osrelease`, `/proc/sys/kernel/hostname` et `/proc/version`.
 9. Noyau modélisé sans `CONFIG_SECCOMP` : `prctl(PR_GET_SECCOMP)` et `PR_SET_SECCOMP` répondent EINVAL, `seccomp(2)` ENOSYS. `/proc/<pid>/status` ne doit donc pas avoir de ligne `Seccomp:` ni `Seccomp_filters:`.
 10. `lkd_proc_lookup` rafraîchit l'enregistrement d'un processus local avant de répondre. Pour un processus d'un autre processus hôte, `state` vaut ce qui a été publié en dernier : `S` pendant `wait4`, `T` en arrêt, `Z` après la mort, sinon `R`. `cmdline` est tronqué à 4096 octets dans le registre (le contenu complet est dans `proc->cmdline` pour un processus local).
 

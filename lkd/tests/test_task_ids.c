@@ -117,7 +117,7 @@ LT_TEST(uname_fields)
     LT_STREQ(u.sysname, "Linux");
     LT_STREQ(u.machine, "x86_64");
     LT_STREQ(u.release, "6.12.0-lkd");
-    LT_STREQ(u.nodename, "sailover");
+    LT_STREQ(u.nodename, "obelisk");
     LT_STREQ(u.domainname, "(none)");
     LT_ERRNO(SC1(uname, 8), LX_EFAULT);
     LT_ERRNO(SC2(sethostname, P("x"), 1), LX_EPERM);   /* CAP_SYS_ADMIN */

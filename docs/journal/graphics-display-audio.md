@@ -114,9 +114,9 @@ Modifications proposées :
 
 1. `npt_unixlib.h:64-73` : remplacer `uint32_t x11_window` par `uint64_t host_window` (identifiant de fenêtre `wsd`) et ajouter `uint64_t offsets[NPT_WSI_MAX_IMAGES]` et `uint64_t sizes[NPT_WSI_MAX_IMAGES]`. Les deux côtés (PE et `.so`) sont construits ensemble, la structure peut changer.
 2. `npt_swapchain_common.c:388-409` : remplir `offsets[i] = exp.planes[0].offset` et `sizes[i] = exp.allocation_size`.
-3. `npt_renderer_wine_common.c:58-71` : remplacer la lecture de `__wine_x11_whole_window` par `GetPropW(hwnd, L"__wine_sailover_window")`, propriété posée par le pilote B sur chaque HWND qui a une fenêtre hôte (G4.2). Pour une fenêtre enfant, remonter à l'ancêtre de premier niveau et présenter dans son rectangle client (première version : fenêtres de premier niveau seulement).
+3. `npt_renderer_wine_common.c:58-71` : remplacer la lecture de `__wine_x11_whole_window` par `GetPropW(hwnd, L"__wine_obelisk_window")`, propriété posée par le pilote B sur chaque HWND qui a une fenêtre hôte (G4.2). Pour une fenêtre enfant, remonter à l'ancêtre de premier niveau et présenter dans son rectangle client (première version : fenêtres de premier niveau seulement).
 4. Nouveau fichier `N/nptunix/npt_unix_wsi_wsd.c` qui garde les quatre points d'entrée (`npt_do_wsi_init/present/drain/destroy`) et l'ordre de l'interface `__wine_unix_call_funcs` :
-   - `init` : obtenir la connexion du pilote dans le même processus par `dlopen("winesailover.so", RTLD_NOLOAD)` puis `dlsym("sailover_wsd_submit")` et `dlsym("sailover_wsd_set_present_listener")` ; pour chaque image, `BUFFER_ATTACH { buffer_id = 0x80000000 | (génération << 4) | i, width, height, stride, format, offset, size }` avec un `dup` du fd. Le format 2 (BGRX8) demande un format `wsd` de plus qui force alpha à 1 dans le shader.
+   - `init` : obtenir la connexion du pilote dans le même processus par `dlopen("wineobelisk.so", RTLD_NOLOAD)` puis `dlsym("obelisk_wsd_submit")` et `dlsym("obelisk_wsd_set_present_listener")` ; pour chaque image, `BUFFER_ATTACH { buffer_id = 0x80000000 | (génération << 4) | i, width, height, stride, format, offset, size }` avec un `dup` du fd. Le format 2 (BGRX8) demande un format `wsd` de plus qui force alpha à 1 dans le shader.
    - `present` : version 1, attendre la fence côté client comme le chemin 2 actuel puis `PRESENT` ; version 2 (préférée) : `PRESENT_FENCED` qui transmet le fd de fence à `wsd`, lequel n'encode l'image qu'une fois ce fd lisible (source GCD sur le fd), sans bloquer le fil du jeu ; `wait_fence_consumed = 1` dans les deux cas.
    - `drain` : le fil lecteur du pilote appelle l'écouteur pour chaque `EV_RELEASE` dont `buffer_id` a le bit 31 ; l'écouteur incrémente `released_count[i]` sous un mutex et réveille une variable de condition ; `drain` attend au plus `timeout_ms`.
    - `destroy` : `BUFFER_DETACH` de chaque image.
@@ -127,7 +127,7 @@ Modifications proposées :
 
 Points de vigilance : la fin d'écriture GPU (la fence de G1 ne mesure que le retrait de la timeline) ; le singleton `g_wsi` (un jeu avec deux chaînes d'échange, ou un changement de fenêtre, réinitialise tout) ; `wsd` exige `stride` et décalage multiples de `minimumLinearTextureAlignmentForPixelFormat` (mesuré : 1 024 et 0 passent).
 
-#### G4.2 Pilote d'affichage Wine « winesailover.drv » (option B), squelette
+#### G4.2 Pilote d'affichage Wine « wineobelisk.drv » (option B), squelette
 
 Modèle LU : `winewayland.drv` ne renseigne que 21 membres de `user_driver_funcs` (`VW/dlls/winewayland.drv/waylanddrv_main.c:36-58`) ; l'interface complète est `VW/include/wine/gdi_driver.h:364-446` (`WINE_GDI_DRIVER_VERSION 108` à `:221`). Les entrées passent par `NtUserSendHardwareInput(hwnd, 0, &input, 0)` (`wayland_pointer.c:167, 272, 319, 388`, `wayland_keyboard.c:644, 814, 840`) ; le mouvement relatif est un `MOUSEEVENTF_MOVE` sans `ABSOLUTE` (`wayland_pointer.c:377`) et les mouvements absolus sont ignorés en mode relatif (`:175-176`). Règle de capture (`wayland_pointer.c:883-888`) : rectangle de clip ou fenêtre couvrant l'écran virtuel avec curseur caché, ou forçage, donne un verrouillage du pointeur (mode relatif) ; clip avec curseur visible donne un confinement.
 
@@ -135,15 +135,15 @@ Attention : le Wine invité validé en QEMU est GE-Proton11-7 (section 2.0), pas
 
 Structure :
 
-- Partie PE `winesailover.drv` : comme `winewayland.drv/dllmain.c:30, 109`, un fil créé au chargement appelle l'unixlib `read_events` en boucle.
-- Partie Unix `winesailover.so` (ELF Linux x86-64 sous FEX) : connexion unique à `wsd` (chemin dans `SAILOVER_WSD_SOCKET`), `HELLO`, table `user_driver_funcs`, fil lecteur qui décode les événements, exports `sailover_wsd_submit` et `sailover_wsd_set_present_listener` pour `nptunix.so`.
-- `HKCU\Software\Wine\Drivers\Graphics = sailover` (`programs/explorer/desktop.c:43, 996-1030`, section 2.3).
+- Partie PE `wineobelisk.drv` : comme `winewayland.drv/dllmain.c:30, 109`, un fil créé au chargement appelle l'unixlib `read_events` en boucle.
+- Partie Unix `wineobelisk.so` (ELF Linux x86-64 sous FEX) : connexion unique à `wsd` (chemin dans `OBELISK_WSD_SOCKET`), `HELLO`, table `user_driver_funcs`, fil lecteur qui décode les événements, exports `obelisk_wsd_submit` et `obelisk_wsd_set_present_listener` pour `nptunix.so`.
+- `HKCU\Software\Wine\Drivers\Graphics = obelisk` (`programs/explorer/desktop.c:43, 996-1030`, section 2.3).
 
 Points d'entrée nécessaires pour Rocket League, et leur traduction `wsd` (les requêtes marquées « v2 » n'existent pas encore dans `wsd_protocol.h`) :
 
 | Membre | Rôle pour Rocket League | Traduction |
 | --- | --- | --- |
-| `pCreateWindow`, `pDestroyWindow` | fenêtre du jeu, lanceur, boîtes de dialogue d'EAC | `WINDOW_CREATE`/`DESTROY` pour les fenêtres de premier niveau ; propriété `__wine_sailover_window` |
+| `pCreateWindow`, `pDestroyWindow` | fenêtre du jeu, lanceur, boîtes de dialogue d'EAC | `WINDOW_CREATE`/`DESTROY` pour les fenêtres de premier niveau ; propriété `__wine_obelisk_window` |
 | `pWindowPosChanging`, `pWindowPosChanged` | taille, position, visibilité, passage en plein écran | `WINDOW_SHOW` ; `WINDOW_FULLSCREEN` quand le rectangle couvre le moniteur sans légende ; position et taille par `WINDOW_SET_FRAME` (v2) |
 | `pShowWindow`, `pSysCommand` | minimiser, restaurer (Alt+Tab) | `WINDOW_MINIMIZE` (v2) |
 | `pSetWindowStyle`, `pSetWindowText`, `pSetWindowIcons` | style, titre | `SET_TITLE` ; style au prochain `WINDOW_SET_FRAME` |
@@ -163,7 +163,7 @@ Soit environ 25 membres, du même ordre que `winewayland` (21).
 
 #### G4.3 Connexion du côté Unix (ELF x86-64 sous FEX) à la socket de `wsd`
 
-- Chemin : `wsd` écoute sur un dossier hôte privé court (mesuré : `$TMPDIR/wsd.XXXXXX/wsd.sock` fait 69 octets, sous la limite de 103). La couche Linux expose ce dossier dans la racine invitée (par exemple `/run/sailover`) et le lanceur exporte `SAILOVER_WSD_SOCKET=/run/sailover/wsd.sock` pour Wine. Le module réseau de la couche traduit `connect(AF_UNIX, chemin invité)` en `connect` hôte sur le chemin hôte ; le chemin hôte, pas le chemin invité, doit tenir dans 103 octets.
+- Chemin : `wsd` écoute sur un dossier hôte privé court (mesuré : `$TMPDIR/wsd.XXXXXX/wsd.sock` fait 69 octets, sous la limite de 103). La couche Linux expose ce dossier dans la racine invitée (par exemple `/run/obelisk`) et le lanceur exporte `OBELISK_WSD_SOCKET=/run/obelisk/wsd.sock` pour Wine. Le module réseau de la couche traduit `connect(AF_UNIX, chemin invité)` en `connect` hôte sur le chemin hôte ; le chemin hôte, pas le chemin invité, doit tenir dans 103 octets.
 - Authentification : le processus FEX tourne sous l'uid de l'utilisateur, donc `getpeereid` côté `wsd` voit le bon uid sans rien traduire ; `LOCAL_PEERPID` donne le pid hôte du processus FEX.
 - SCM_RIGHTS : l'en-tête `cmsghdr` Linux x86-64 fait 16 octets (`size_t cmsg_len`, alignement 8) contre 12 sur Darwin (`socklen_t`, alignement 4) ; la couche doit réencoder les messages de contrôle et traduire les numéros de fd invités en fds hôtes par sa table de fds. `wsd` v1 n'envoie jamais de fd au client, seul le sens client -> serveur est requis.
 - Mémoire partagée : les fds attachés (images Neptune, surfaces GDI) sont des objets shm hôtes reçus de vtest. Le `mmap(MAP_SHARED)` invité doit être une vraie projection partagée de l'objet hôte ; HyperLinux faisait une copie privée pour `MAP_SHARED` sur fichier (`RHL/graphics-notes.md:7-15`) : avec une copie, ni le rendu ni la présentation ne marchent. Les décalages de projection hôte doivent être des multiples de 16 Kio et `ftruncate` arrondit la taille à 16 Kio (mesuré en 1.6) alors que le client Neptune arrondit à 4 Kio (`npt_swapchain_common.c:398-399`).
@@ -180,7 +180,7 @@ Soit environ 25 membres, du même ordre que `winewayland` (21).
 - `RHL` = `/Users/mathieu/Documents/Github/Zagrios/sailover/build/experiments/rocket-hyperlinux-20260928`
 - `NEP` = `$RHL/probes/qemu-neptune-graphics-20260930`
 - `DOC` = `/Users/mathieu/Documents/Github/Zagrios/sailover/docs/research/rocket-league-eac-technologies-macos-2026-10-01.md`
-- `VOILE` = `/Users/mathieu/Library/Application Support/com.zagrios.sailover/Voile/`
+- `VOILE` = `/Users/mathieu/Library/Application Support/com.zagrios.obelisk/Voile/`
 
 ## Acquis des documents existants (LU, non revérifié dans cette session)
 
@@ -342,7 +342,7 @@ Pour un processus hôte « autonome » du produit, le spike montre qu'on peut pa
 
 ### 2.0 Ce que le guest QEMU validé utilisait (Xorg, openbox, curseur)
 
-LU et MESURE dans `NEP/guest/guest-graphics.sh`, `NEP/guest/xorg.conf`, `NEP/guest/openbox.xml`, `NEP/guest/guest-game.sh`, `NEP/SailOver-EAC-Graphics.utm/config.plist` et dans les sorties non privées de `NEP/game-query-fix-20260930T211549Z/` (les fichiers `*.private.log` n'ont pas été ouverts) :
+LU et MESURE dans `NEP/guest/guest-graphics.sh`, `NEP/guest/xorg.conf`, `NEP/guest/openbox.xml`, `NEP/guest/guest-game.sh`, `NEP/Obelisk-EAC-Graphics.utm/config.plist` et dans les sorties non privées de `NEP/game-query-fix-20260930T211549Z/` (les fichiers `*.private.log` n'ont pas été ouverts) :
 
 | Élément | Valeur | Source |
 | --- | --- | --- |
@@ -350,7 +350,7 @@ LU et MESURE dans `NEP/guest/guest-graphics.sh`, `NEP/guest/xorg.conf`, `NEP/gue
 | Serveur X | Xorg 21.1.16 (`xserver-xorg-core 2:21.1.16-1.3+deb13u4`), écran 1280x720 profondeur 24, `AutoAddDevices false`, lancé en racine sur `:89` avec cookie `-auth` | `guest-graphics.sh:51-53`, `xorg.conf` |
 | Pilote | `modesetting` sur `/dev/dri/card0` (virtio-gpu), `AccelMethod glamor`, `DRI 3`, journal : « glamor X acceleration enabled on virgl » | `xorg.conf`, `outputs/xorg.log` |
 | Curseur | `SWcursor false` (curseur matériel, taille maximale 64x64) ; le défaut précédent dessinait un rectangle blanc autour du pointeur, corrigé et validé par un témoin possédé de 120 images | `NEP/validation.json` (« cursor_fix »), `NEP/cursor-hardware-control-20260930T211146Z/result.json` |
-| Entrées | `evdev` explicite : clavier `AT Translated Set 2 keyboard` lié à `/dev/input/sailover-keyboard` (XkbLayout `us`), pointeur `QEMU QEMU USB Tablet` (absolu) lié à `/dev/input/sailover-pointer` ; une souris PS/2 relative est aussi présente | `xorg.conf`, `outputs/kernel-input-devices.txt`, `guest-graphics.sh:12-25` |
+| Entrées | `evdev` explicite : clavier `AT Translated Set 2 keyboard` lié à `/dev/input/obelisk-keyboard` (XkbLayout `us`), pointeur `QEMU QEMU USB Tablet` (absolu) lié à `/dev/input/obelisk-pointer` ; une souris PS/2 relative est aussi présente | `xorg.conf`, `outputs/kernel-input-devices.txt`, `guest-graphics.sh:12-25` |
 | Gestionnaire de fenêtres | openbox 3.6.1-12 (`libobt2v5_3.6.1-12`), `focusNew yes`, `followMouse yes`, `focusDelay 0`, `raiseOnFocus no`, `decor no` pour toutes les fenêtres ; menu absent (« Unable to find a valid menu file »). Le script note « A real X11 window manager supplies focus and WM_TAKE_FOCUS delivery » ; après lancement, la fenêtre focalisée est `0x1200001` (`revert 2`) | `openbox.xml`, `guest-graphics.sh:82-92`, `outputs/x11-focus.json`, `outputs/openbox.log` |
 | Mesa | 25.0.7 (`libgl1-mesa-dri`, `libegl-mesa0`, `mesa-libgallium`), uniquement pour glamor ; le rendu du jeu ne passe pas par Mesa | `NEP/xorg-packages/` |
 | Repli sans GPU | `Xvfb :89 -screen 0 640x480x24` | `guest-graphics.sh:58` |

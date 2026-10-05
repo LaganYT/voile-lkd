@@ -12,7 +12,7 @@ import json, os, pathlib, re, shutil, signal, subprocess, sys, time
 
 EXP = pathlib.Path(__file__).resolve().parents[1]
 SECRETS = EXP / '.secrets'
-ORIG = pathlib.Path.home() / 'Library/Application Support/com.zagrios.sailover/Games/Epic/epic-52edd447ec86748fc2afecc6cd67acc7748a5461-Windows'
+ORIG = pathlib.Path.home() / 'Library/Application Support/com.zagrios.obelisk/Games/Epic/epic-52edd447ec86748fc2afecc6cd67acc7748a5461-Windows'
 CLONE = EXP / 'run' / 'game-clone'
 HL = EXP.parent / 'rocket-hyperlinux-20260928'
 HOST = os.environ.get('HOSTRUN', str(EXP / 'build-lead' / 'host' / 'fexdarwin-run'))
@@ -99,14 +99,14 @@ for _ in range(50):
 env = dict(os.environ)
 env.update(FEXDARWIN_LKD='1', FEXDARWIN_ROOT=str(HL / 'linux-root/rootfs'), FEXDARWIN_ROOT_RO='1',
            FEXDARWIN_BIND=';'.join([f'/opt/wine={EXP}/src/wine-linux/install:ro', f'/home/user={EXP}/run/home-user-own',
-                                    f'/games/rl={CLONE}', f'/run/sailover={WSD_DIR}']))
+                                    f'/games/rl={CLONE}', f'/run/obelisk={WSD_DIR}']))
 guest_env = ['HOME=/home/user', 'USER=user', 'LOGNAME=user', 'PATH=/opt/wine/bin:/usr/bin:/bin', 'LANG=en_US.UTF-8',
              'WINEPREFIX=/home/user/pfx-eac', 'WINEARCH=win64', 'WINEDEBUG=' + os.environ.get('GUEST_WINEDEBUG', '-all,err+all'), 'WINEDLLOVERRIDES=winemenubuilder.exe=d;d3d11,dxgi,d3d12=n',
-             'VTEST_SOCKET_NAME=/run/sailover/vtest.sock', 'NPT_DEBUG=force_vtest']
-# Test switches of our own components only (driver, Neptune): GUEST_EXTRA_ENV="WINE_SAILOVER_LATENCY=1;NPT_X=y".
+             'VTEST_SOCKET_NAME=/run/obelisk/vtest.sock', 'NPT_DEBUG=force_vtest']
+# Test switches of our own components only (driver, Neptune): GUEST_EXTRA_ENV="WINE_OBELISK_LATENCY=1;NPT_X=y".
 for e in filter(None, os.environ.get('GUEST_EXTRA_ENV', '').split(';')):
-    if not e.startswith(('WINE_SAILOVER_', 'NPT_')):
-        sys.exit(f'GUEST_EXTRA_ENV: {e!r} is not a WINE_SAILOVER_* or NPT_* switch')
+    if not e.startswith(('WINE_OBELISK_', 'NPT_')):
+        sys.exit(f'GUEST_EXTRA_ENV: {e!r} is not a WINE_OBELISK_* or NPT_* switch')
     guest_env.append(e)
 argv = [TO, str(secs), HOST, '--cwd', '/games/rl/Binaries/Win64']
 for e in guest_env:
