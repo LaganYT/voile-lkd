@@ -553,3 +553,92 @@ déjà l'origine de ses coordonnées. Vérifié avec Obelisk sur l'écran du Mac
 - Bancs d'essai : compiler avec `x86_64-w64-mingw32-clang -O2` (llvm-mingw de Voile). Les lancer par
   `crates/game-runtime/src/linux_engine/launch.sh` d'Obelisk, sous `run-with-timeout.sh`, puis vérifier
   `pgrep -x fexdarwin-run`.
+
+## Cadence sur l'écran du MacBook et wineserver qui tourne à vide (7 octobre)
+
+Machine : la même, mais sur l'écran intégré (ProMotion, 120 Hz), sur secteur. Runtime Voile `v26.3.0-11`. Scène :
+Free Play, Forbidden Temple, caméra balle, voiture à l'arrêt, fenêtre 2560x1408, VSync décochée. Les lancements se
+font depuis Obelisk, piloté par l'accessibilité, et le jeu est conduit au clavier et à la souris par `wsdctl`.
+
+### Mesures
+
+| Mesure | v26.3.0-11 | Cadence `latch` | `latch` + correctif epoll |
+|---|---|---|---|
+| Images affichées, Free Play | 30,5 i/s | 120 i/s | 120 i/s |
+| Images affichées, menu | 33 i/s | 120 i/s | 120 i/s |
+| Entrée → image qui réagit soumise (12 essais) | 62 à 98 ms, médiane 77 | 18 à 30 ms, médiane 20 | 17,5 à 23,6 ms, médiane 21 |
+| Soumission → affichage | 33 ms | 32 ms | 32 ms |
+| CPU du moteur (engine-top), Free Play | 0,55 cœur | 2,22 cœurs | 1,46 cœur |
+| wineserver | | 78 % d'un cœur | 8 % d'un cœur |
+| Free Play débridé (cadence `off`, `UncappedFramerate=True`) | | 184 à 196 i/s, 3,0 cœurs | 185 à 210 i/s, 2,4 cœurs |
+| Démarrage (`EULA sync response`) | 20,5 s | | 20,7 s |
+| EAC (`bAntiCheatEnabled`) | True | True | True à chaque lancement |
+
+### Cadence : attendre la prise de l'image, plus son affichage
+
+Avec la cadence `after`, nptunix attendait l'évènement `EV_PRESENTED` de chaque image, donc la composition de macOS
+(3 à 4 rafraîchissements sur l'écran intégré, 25 à 33 ms) faisait partie de chaque image. Sur un écran à 120 Hz, le
+jeu plafonnait à 30 i/s. Les intervalles affichés tombaient sur 25 et 33,3 ms, des multiples du tick de 8,33 ms : le
+display link tournait bien à 120 Hz.
+
+La nouvelle cadence `latch` (par défaut) attend `EV_RELEASE` de l'image envoyée, reconnue par son numéro de série :
+wsd l'a copiée dans un drawable à un tick, ou l'a remplacée. Le jeu reste calé sur la fréquence de l'écran avec une
+seule image en file, et la composition se superpose aux images suivantes. `after`, `before` et `off` restent
+disponibles par `NPT_WSD_PACING`.
+
+Vérifié : VSync activée puis désactivée, passage en sans bordure puis retour en fenêtré, fenêtre minimisée (environ
+16 i/s, attentes bornées à 100 ms) puis restaurée (retour à 118 i/s en quelques secondes).
+
+Essai écarté : demander au display link la fréquence maximale de l'écran (`preferredFrameRateRange`). Aucun effet,
+le display link tournait déjà à 120 Hz.
+
+### epoll de LKD : un filtre qui ne surveille que la fermeture tournait en boucle
+
+C'est l'anomalie d'epoll de wineserver notée le 3 octobre. Un compteur dans `do_wait` a montré environ 300 000 tours
+à vide par seconde, toujours sur une socket. wineserver met `events` à 0 sur une socket de client qu'il ne veut pas
+lire tout de suite. LKD enregistrait quand même un filtre kqueue de lecture, déclenché par niveau, pour voir la
+fermeture. Tant que la socket gardait des données non lues, kqueue la signalait à chaque attente, `ep_collect` ne
+trouvait rien de demandé, et `epoll_wait` repartait aussitôt.
+
+Correctif : quand l'élément ne demande ni `EPOLLIN` ni `EPOLLRDNORM` (`events` à 0, ou `EPOLLRDHUP` seul), le filtre
+de lecture est déclenché par front (`EV_CLEAR`). Il réveille une fois par nouvelle donnée ou à la fermeture. Quand le
+mode du filtre change, LKD le retire puis le remet. Test `hangup_only_watch_does_not_spin` dans `test_net_epoll` :
+il échoue avant le correctif (le temps CPU de l'attente) et passe après. Les six suites réseau passent.
+
+Deux constats sans rapport avec ce correctif :
+- LKD ne signale pas `EPOLLHUP` sur une socket dont le pair a fermé tant qu'elle garde des données non lues (même
+  résultat avant et après).
+- `test_sig_futex` bloque dans le cas `waitv` (même résultat avant et après).
+
+### Profil du fil de rendu (Free Play débridé)
+
+Un échantillonneur temporaire (suspension de chaque fil invité, PC hôte traduit en RIP invité par
+`RestoreRIPFromHostPC`, retiré depuis) donne :
+- code du jeu 15 à 17 % ;
+- `d3d11.dll` de Neptune 13 à 15 %, dont 5 % dans la soumission au ring (verrou, `sfence`, barrière complète,
+  échange atomique à chaque commande) ;
+- `memmove` et `memcmp` d'ucrtbase 5 % ;
+- l'attente active du jeu (`NtYieldExecution` : deux `getrusage` et un `sched_yield`) environ 30 % ;
+- des allers-retours avec wineserver 6 à 14 % : `NtCreateEvent`, puis `get_inproc_sync` qui va chercher le
+  descripteur ntsync de chaque nouvel évènement ;
+- le reste en attentes ntsync.
+
+Le fil principal attend surtout le fil de rendu (ntsync) et fait des ioctls de socket (13 %). Fautes SMC : 4 en 11 s,
+JIT : 4 ms. Dans le serveur de rendu, environ 9 % du décodeur part dans `dxmt::guid::make_guid_helper` :
+`__uuidof` y relit le texte du GUID à chaque `QueryInterface`.
+
+### Essais écartés
+
+| Essai | Résultat |
+|---|---|
+| `TSOEnabled=0` | Le jeu plante dans `d3d11.dll` (le ring de Neptune dépend de l'ordre mémoire x86). |
+| QoS user-interactive pour tous les fils invités | 189 à 211 i/s débridé (moyenne +6 %), mais un lancement sur six sans EAC. |
+| D3DMetal (serveur de rendu x86_64 sous Rosetta) | Image correcte, 119,4 i/s, 212 i/s débridé (comme DXMT), démarrage 22,5 s. Premier lancement sans EAC. |
+| Métadonnées volatiles des PE (TSO désactivé hors accès volatils) | Aucun des jeux installés n'en a. |
+
+### EAC : la course du montage du module
+
+Sur tous les journaux de lancement de la journée, EAC est absent exactement quand « Wine module mapping » a duré
+2,31 s (d'habitude 0,37 à 0,41 s ; un lancement à 1,08 s est resté actif). Les deux cas : un lancement avec la QoS
+user-interactive, et le premier lancement de D3DMetal, pendant que Rosetta traduisait le serveur de rendu. Toute
+charge forte au moment du lancement peut donc désactiver EAC. C'est à corriger pour lui-même.
