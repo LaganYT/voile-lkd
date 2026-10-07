@@ -241,6 +241,46 @@ LT_TEST(socket_events)
 }
 
 /* A listening socket is EPOLLIN when a connection waits. */
+/* A watcher with no interest in data (events 0, or EPOLLRDHUP alone) on a socket holding unread data sleeps through
+ * its timeout instead of spinning (wineserver parks busy client sockets with events 0), still sees data it asks for
+ * again, and still gets the hangup. */
+static double thread_cpu_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
+    return ts.tv_sec * 1e3 + ts.tv_nsec / 1e6;
+}
+
+LT_TEST(hangup_only_watch_does_not_spin)
+{
+    int ep = (int)SC(T, epoll_create1, 0);
+    int32_t sv[2];
+    struct lx_epoll_event ev[2];
+    LT_EQ(SC(T, socketpair, LX_AF_UNIX, LX_SOCK_STREAM, 0, P(sv)), 0);
+    SC(T, write, sv[1], P("data"), 4);
+    LT_EQ(ctl(ep, LX_EPOLL_CTL_ADD, sv[0], LX_EPOLLIN, 1), 0);
+    LT_EQ(wait_ms(ep, ev, 2, 1000), 1);
+    LT_EQ(ev[0].events, LX_EPOLLIN);
+    LT_EQ(ctl(ep, LX_EPOLL_CTL_MOD, sv[0], 0, 1), 0);                  /* data stays unread */
+    double c0 = thread_cpu_ms();
+    LT_EQ(wait_ms(ep, ev, 2, 200), 0);
+    LT_CHECK(thread_cpu_ms() - c0 < 50);
+    LT_EQ(ctl(ep, LX_EPOLL_CTL_MOD, sv[0], LX_EPOLLRDHUP, 1), 0);
+    c0 = thread_cpu_ms();
+    LT_EQ(wait_ms(ep, ev, 2, 200), 0);
+    LT_CHECK(thread_cpu_ms() - c0 < 50);
+    LT_EQ(ctl(ep, LX_EPOLL_CTL_MOD, sv[0], LX_EPOLLIN, 1), 0);          /* level-triggered again: the old data */
+    LT_EQ(wait_ms(ep, ev, 2, 1000), 1);
+    LT_EQ(ev[0].events, LX_EPOLLIN);
+    char buf[8];
+    LT_EQ(SC(T, read, sv[0], P(buf), sizeof buf), 4);
+    LT_EQ(ctl(ep, LX_EPOLL_CTL_MOD, sv[0], 0, 1), 0);
+    SC(T, close, sv[1]);
+    LT_EQ(wait_ms(ep, ev, 2, 1000), 1);
+    LT_CHECK(ev[0].events & LX_EPOLLHUP);
+    SC(T, close, sv[0]); SC(T, close, ep);
+}
+
 LT_TEST(listen_accept_loop)
 {
     int ep = (int)SC(T, epoll_create1, 0);
@@ -429,6 +469,7 @@ int main(void)
     LT_RUN(oneshot);
     LT_RUN(close_removes_watch);
     LT_RUN(socket_events);
+    LT_RUN(hangup_only_watch_does_not_spin);
     LT_RUN(listen_accept_loop);
     LT_RUN(eventfd_in_epoll);
     LT_RUN(blocking_wait_wakes_and_interrupts);

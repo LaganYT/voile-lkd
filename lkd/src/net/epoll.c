@@ -42,7 +42,7 @@ struct ep_item {
     uint32_t events;                         /* as registered, with ERR|HUP added */
     uint64_t data;
     uint32_t gen;                            /* slot generation, 0 = free slot */
-    int regs;                                /* bit 0: READ registered, bit 1: WRITE registered */
+    int regs;                                /* bit 0: READ registered, bit 1: WRITE registered, bit 2: READ is edge-triggered */
     int hfd;                                 /* wait source registered with the kqueue, -1 if none */
     int disabled;                            /* EPOLLONESHOT fired */
     int poll_only;                           /* must be scanned at epoll_wait entry */
@@ -154,14 +154,19 @@ static int ep_arm(lkd_fdobj *self, struct ep_item *it, uint32_t slot, int rebuil
     }
     if (!rd && !wr) rd = 1;                  /* ERR|HUP only: the read filter reports EOF */
     uint16_t add = EV_ADD | EV_ENABLE | ((it->events & LX_EPOLLET) ? EV_CLEAR : 0);
+    /* A read filter that only watches for hangup (no EPOLLIN/EPOLLRDNORM: events 0, or EPOLLRDHUP alone) must not
+     * be level-triggered: while unread data sits in the host fd kqueue reports it at every wait, revents finds
+     * nothing that was asked for, and epoll_wait spins (wineserver, which sets events to 0 on busy client sockets:
+     * about 300,000 empty passes a second in a game). Edge-triggered, it wakes once per new data or at EOF. */
+    uint16_t add_rd = add | ((it->events & (LX_EPOLLIN | LX_EPOLLRDNORM)) || notify_only ? 0 : EV_CLEAR);
     uint64_t ud = udata_of(slot, it->gen);
     struct kevent kev[2];
     int n = 0, newregs = 0;
-    if (rd) { EV_SET(&kev[n++], hfd, EVFILT_READ, add, 0, 0, (void *)(uintptr_t)ud); newregs |= 1; }
+    if (rd) { EV_SET(&kev[n++], hfd, EVFILT_READ, add_rd, 0, 0, (void *)(uintptr_t)ud); newregs |= 1 | ((add_rd & EV_CLEAR) ? 4 : 0); }
     if (wr && !notify_only) { EV_SET(&kev[n++], hfd, EVFILT_WRITE, add, 0, 0, (void *)(uintptr_t)ud); newregs |= 2; }
     if (!rebuild) {
-        /* drop filters that are no longer wanted */
-        if ((it->regs & 1) && !(newregs & 1)) { struct kevent d; EV_SET(&d, hfd, EVFILT_READ, EV_DELETE, 0, 0, 0); kevent(kq, &d, 1, NULL, 0, NULL); }
+        /* drop filters that are no longer wanted, and a read filter whose trigger mode changes (re-added below) */
+        if ((it->regs & 1) && (!(newregs & 1) || (it->regs & 4) != (newregs & 4))) { struct kevent d; EV_SET(&d, hfd, EVFILT_READ, EV_DELETE, 0, 0, 0); kevent(kq, &d, 1, NULL, 0, NULL); }
         if ((it->regs & 2) && !(newregs & 2)) { struct kevent d; EV_SET(&d, hfd, EVFILT_WRITE, EV_DELETE, 0, 0, 0); kevent(kq, &d, 1, NULL, 0, NULL); }
     }
     for (int i = 0; i < n; i++) {
