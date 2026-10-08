@@ -642,3 +642,24 @@ Sur tous les journaux de lancement de la journée, EAC est absent exactement qua
 2,31 s (d'habitude 0,37 à 0,41 s ; un lancement à 1,08 s est resté actif). Les deux cas : un lancement avec la QoS
 user-interactive, et le premier lancement de D3DMetal, pendant que Rosetta traduisait le serveur de rendu. Toute
 charge forte au moment du lancement peut donc désactiver EAC. C'est à corriger pour lui-même.
+
+## La cadence suit la VSync du jeu (8 octobre)
+
+Le `SyncInterval` de chaque `Present` va maintenant de Neptune (D3D11 et D3D12) jusqu'à nptunix (Neptune `144f613`,
+voile-wine `5ec9624`). Un `Present` avec VSync attend la prise de l'image par wsd (`latch`), un `Present` sans VSync
+n'attend rien, comme sur Windows. `NPT_WSD_PACING` impose toujours un mode pour toutes les images. Obelisk recopie le
+`d3d11.dll` du runtime dans le préfixe avant chaque lancement, donc le pilote et nptunix ont toujours la même structure
+de paramètres.
+
+| Lancement (Free Play) | Écran | `SyncInterval` reçu | Images soumises | Images affichées | EAC |
+|---|---|---|---|---|---|
+| VSync décochée, FPS illimités | MacBook 120 Hz | 0 | 190 i/s (menu 385) | 120 i/s | True |
+| VSync décochée, FPS limités (`UncappedFramerate=False`) | MacBook 120 Hz | 0 | 194 i/s | 120 i/s | True |
+| `UseVsync=True` + `UncappedFramerate=True` | 240 Hz, fenêtré et plein écran | 0 sur 20 270 et 15 062 images | 179 à 187 i/s | 173 à 179 i/s | True |
+| VSync cochée dans le jeu (`UncappedFramerate=False`) | 240 Hz | ≥ 1 (attente de cadence 3,9 à 5,6 ms) | 176 i/s | 176 i/s | True |
+
+Rocket League n'envoie la VSync que si les FPS ne sont pas illimités. `UncappedFramerate=False` ne limite rien
+ici. Démarrage inchangé (20,7 s). En plein écran, soumission → affichage tombe à 12,6 ms (24 ms en fenêtré).
+
+À voir : sur l'écran externe à 240 Hz (XG27AQWMG), wsd n'affiche pas plus de 173 à 179 i/s, avec ou sans cadence,
+même quand le jeu en soumet davantage.
