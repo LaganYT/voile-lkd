@@ -643,6 +643,12 @@ Sur tous les journaux de lancement de la journée, EAC est absent exactement qua
 user-interactive, et le premier lancement de D3DMetal, pendant que Rosetta traduisait le serveur de rendu. Toute
 charge forte au moment du lancement peut donc désactiver EAC. C'est à corriger pour lui-même.
 
+Suite (8 octobre). Les deux échecs durent 2,305 et 2,306 s : c'est un délai fixe d'environ 2 s dans la bootstrapper,
+pas une lenteur quelconque. Les deux lancements ratés démarraient aussi le jeu bien plus lentement (préinitialisation
+de 5,4 s contre 1,4 s avec D3DMetal). Un lancement avec les 18 cœurs saturés par 18 boucles `yes` pendant 25 s à partir
+du clic : montage en 0,386 s, EAC actif. Une charge CPU ordinaire ne suffit donc pas. Aucun échec sur plus de 45
+lancements avec la configuration retenue. Ce qu'attend la bootstrapper pendant ces 2 s reste inconnu.
+
 ## La cadence suit la VSync du jeu (8 octobre)
 
 Le `SyncInterval` de chaque `Present` va maintenant de Neptune (D3D11 et D3D12) jusqu'à nptunix (Neptune `144f613`,
