@@ -183,7 +183,10 @@ static void probe_frame(WsdBuffer *b, uint64_t client_ns, uint64_t rx_ns) {
 @property NSRect savedFrame;
 @property NSWindowStyleMask savedStyle;
 @property NSWindowLevel savedLevel;
+/* the mac keycodes the client was last told are down */
+@property(strong) NSMutableIndexSet *heldKeys;
 - (void)sendEvent:(uint32_t)type payload:(const void *)p len:(uint32_t)n extra:(NSData *)extra;
+- (void)noteKey:(uint32_t)code down:(BOOL)down;
 @end
 
 /* Audio output stream (WSD_AUDIO_*): one default-output AudioUnit per stream, whose render callback reads the
@@ -327,6 +330,7 @@ static CAMetalLayer *make_metal_layer(void) {
   struct wsd_ev_key k = {self.ww.windowId, (down ? WSD_KEY_DOWN : 0) | (e.isARepeat ? WSD_KEY_REPEAT : 0) | [self synth],
                          e.keyCode, (uint32_t)(e.modifierFlags >> 16), [self evNs:e]};
   NSData *chars = [e.characters dataUsingEncoding:NSUTF8StringEncoding] ?: [NSData data];
+  [self.ww noteKey:e.keyCode down:down];
   [self.ww sendEvent:WSD_EV_KEY payload:&k len:sizeof(k) extra:chars];
 }
 - (void)keyDown:(NSEvent *)e { [self key:e down:YES]; }
@@ -344,6 +348,7 @@ static CAMetalLayer *make_metal_layer(void) {
   }
   struct wsd_ev_key k = {self.ww.windowId, ((e.modifierFlags & bit) ? WSD_KEY_DOWN : 0) | [self synth], e.keyCode,
                          (uint32_t)(e.modifierFlags >> 16), [self evNs:e]};
+  [self.ww noteKey:e.keyCode down:(e.modifierFlags & bit) != 0];
   [self.ww sendEvent:WSD_EV_KEY payload:&k len:sizeof(k) extra:nil];
 }
 - (void)button:(NSEvent *)e which:(uint32_t)b down:(BOOL)down {
@@ -416,6 +421,37 @@ static CAMetalLayer *make_metal_layer(void) {
   [self sendEvent:WSD_EV_CLOSE payload:&w len:sizeof(w) extra:nil];
   return NO;
 }
+- (void)noteKey:(uint32_t)code down:(BOOL)down {
+  if (!self.heldKeys) self.heldKeys = [NSMutableIndexSet indexSet];
+  if (down)
+    [self.heldKeys addIndex:code];
+  else
+    [self.heldKeys removeIndex:code];
+}
+- (void)sendKey:(uint32_t)code down:(BOOL)down {
+  struct wsd_ev_key k = {self.windowId, down ? WSD_KEY_DOWN : 0, code, (uint32_t)(NSEvent.modifierFlags >> 16),
+                         now_ns()};
+  [self noteKey:code down:down];
+  [self sendEvent:WSD_EV_KEY payload:&k len:sizeof(k) extra:nil];
+}
+/* A key released while another app is in front never reaches the window: leaving it releases every key the client
+ * holds down, and coming back presses the modifiers the user still holds (2026-10-09: Obelisk's Shift+Tab overlay
+ * took the focus between Shift's press and its release, and the game kept running). Command is left out: Cmd+Tab
+ * back into the game would tap the Windows key. */
+- (void)releaseHeldKeys {
+  NSIndexSet *held = [self.heldKeys copy];
+  [held enumerateIndexesUsingBlock:^(NSUInteger code, BOOL *stop) {
+    [self sendKey:(uint32_t)code down:NO];
+  }];
+}
+- (void)pressHeldModifiers {
+  static const uint16_t modifiers[] = {kVK_Shift, kVK_RightShift, kVK_Control, kVK_RightControl, kVK_Option,
+                                       kVK_RightOption};
+  for (size_t i = 0; i < sizeof(modifiers) / sizeof(modifiers[0]); i++)
+    if (CGEventSourceKeyState(kCGEventSourceStateHIDSystemState, modifiers[i]) &&
+        ![self.heldKeys containsIndex:modifiers[i]])
+      [self sendKey:modifiers[i] down:YES];
+}
 - (void)windowDidBecomeKey:(NSNotification *)n {
   /* back in the window: a relative-mode window takes the pointer again */
   if (self.relative && !g_relative_global) {
@@ -425,6 +461,7 @@ static CAMetalLayer *make_metal_layer(void) {
   }
   struct wsd_window_flag f = {self.windowId, 1};
   [self sendEvent:WSD_EV_FOCUS payload:&f len:sizeof(f) extra:nil];
+  [self pressHeldModifiers];
 }
 - (void)windowDidResignKey:(NSNotification *)n {
   /* The pointer disassociation is global: leaving the window (Cmd+Tab, another app, a notification) must give the
@@ -435,6 +472,7 @@ static CAMetalLayer *make_metal_layer(void) {
     g_relative_global = NO;
     LOG("window %u: focus lost, relative mouse suspended", self.windowId);
   }
+  [self releaseHeldKeys];
   struct wsd_window_flag f = {self.windowId, 0};
   [self sendEvent:WSD_EV_FOCUS payload:&f len:sizeof(f) extra:nil];
 }
