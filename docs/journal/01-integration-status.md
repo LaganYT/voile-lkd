@@ -315,3 +315,38 @@ Limites :
 - Une instruction invalide dans une page vérifiée n'est pas revérifiée. Si un programme corrige ses octets en place plus tard, le bloc lève encore SIGILL. Je n'ai vu aucun programme le faire.
 
 Rapport : `sailover/build/experiments/eldenring-linux-20261010/reports/11-fex-smc-eac.md`.
+
+## SCM_RIGHTS : les périphériques émulés, les répertoires synthétiques et les autres objets sans fd hôte passent d'un processus hôte à l'autre (2026-10-10, 13:15)
+
+Contexte : avec le runtime -13-dev2, l'EAC d'ELDEN RING rend 301 dans Obelisk, puis le jeu meurt une seconde plus tard : `lkd: net: SCM_RIGHTS of a dev object cannot cross host processes (-EOPNOTSUPP)` et `wine client error:198: sendmsg: Operation not supported`. `steam.exe` crée `start_protected_game.exe` sans handles standard, Wine lui donne `/dev/null` en fd 0 et 1 (`ntdll/unix/process.c` `set_stdio_fd`). Sous LKD c'est le `/dev/null` émulé, sans fd hôte. Le processus Wine d'`eldenring.exe`, lancé par l'enfant d'EAC, n'a pas de parent Wine et envoie ses fd 0, 1 et 2 à wineserver (`env.c` `get_initial_console`). `net_scm_export` refusait tout objet sans fd hôte. Même refus pour le répertoire synthétique `/games` (rapport 06 de sailover). Sonde : `wine cmd /c ver </dev/null` échouait de la même façon.
+
+Inventaire des sortes de descripteurs (avant) :
+
+| Sorte | fd hôte | SCM_RIGHTS avant |
+|---|---|---|
+| fichier, répertoire hôte, tube, socket, tty, shm hôte, memfd | oui | fd hôte (memfd : fichier supprimé, sans nom ni scellés) |
+| eventfd | non (région shm et tube) | 3 fd hôtes |
+| ntsync, périphérique et objets | non (ancre) | l'ancre |
+| /dev/null, zero, full, random, urandom | non | refusé |
+| répertoire synthétique, répertoire de /proc, /dev, /sys | non | refusé |
+| O_PATH | non | refusé |
+| fichier généré de /proc et /sys, /proc/<pid>/mem | non | refusé |
+| signalfd | non (tube de notification) | refusé |
+| epoll, timerfd, inotify | kqueue | refusé (macOS ne passe pas une kqueue : EINVAL) |
+
+Correctif (`4ad078c`, témoin `7f98f29`), mécanisme général : `lkd_fd_ops.export_fds` dit ce qui porte une description, le récepteur la reconstruit (`net_scm_import`).
+- Jumeaux hôtes. `/dev/null`, `/dev/zero`, `/dev/random` et `/dev/urandom` envoient le périphérique macOS de même comportement, ouvert au premier envoi avec le mode d'accès invité. Un jumeau qui arrive sans chemin invité, par SCM_RIGHTS ou comme entrée standard du runtime, redevient le périphérique Linux (1:3, 1:5, 1:8, 1:9) : `lkd_procfs_dev_adopt`, appelé par `fs_wrap_host_fd`. Lectures et écritures restent dans LKD. MESURE : macOS refuse `write` sur `/dev/urandom` (EPERM), rend POLLNVAL à `poll` et EINVAL à `kevent` sur ses périphériques ; `F_SETFL` O_NONBLOCK et O_APPEND y passent et se partagent par SCM_RIGHTS.
+- Enregistrements (`src/core/fdrec.c`). Un objet sans forme hôte part comme un objet shm POSIX de 16 Kio, supprimé dès sa création, avec la signature `LKDFREC1`, son type, les drapeaux d'état Linux et des données de niveau invité seulement (pas de chemin hôte, pas de pointeur). Le module propriétaire rouvre la chose dans le récepteur, avec les droits du récepteur : répertoires synthétiques et virtuels, O_PATH (chemin invité global, `fs_rec_import`) ; `/dev/full`, sans jumeau macOS, et les périphériques O_PATH ; fichiers générés et `/proc/<pid>/mem` (chemin canonique et position) ; signalfd (son masque ; il lit les signaux du récepteur, comme `signalfd_dequeue` sur `current`).
+- epoll, timerfd et inotify restent refusés : leur état est une kqueue et une table de ce processus.
+
+Écarts : le récepteur d'un enregistrement a une nouvelle description de la même chose. Position et drapeaux changés ensuite ne sont pas partagés, la règle de `fd.h` pour les objets sans fd hôte. Constatés en passant, non corrigés : un tube créé par LKD arrive non bloquant chez le récepteur (son fd hôte l'est toujours, MESURE par `F_GETFL`) ; un eventfd EFD_NONBLOCK arrive bloquant ; un memfd arrive en fichier ordinaire.
+
+MESURE :
+- `test_net_scm` (nouveau, 5 cas, 38 assertions) : périphériques aller et retour, `/dev/null` hôte en entrée standard, répertoire synthétique, `/dev`, `/proc/<pid>`, O_PATH, `/proc/<pid>/status` à sa position, signalfd, entre deux processus hôtes. Les 5 cas échouent sur l'arbre d'avant. Suite : 43 programmes passent ; `test_sig_futex` dépasse son délai au même cas (`waitv`) que sur l'arbre intact.
+- Témoin `w30_scmdev` (glibc, nouveau) : rien de reçu avec le moteur de `c545aa6` (même LKD que `97f227e`), `W30 PASS` après. `w22` à `w27` passent avec le moteur final (`w25` par `hostpid.sh`).
+- Sonde Wine, préfixe et runtime copiés : `wine cmd /c ver </dev/null` rendait 1 avec `wine client error ... sendmsg: Operation not supported`, rend 0 (`Microsoft Windows 10.0.19045`). `wine cmd /c ver` seul : 0 avant et après. Deux sessions Wine de suite (`wineserver -p0` entre elles) restent parfois bloquées, avec l'ancien moteur aussi (1 fois sur 3) : le second `cmd.exe` attend une réponse de wineserver qui ne vient pas. Antérieur, non traité.
+- Rocket League (`rl-direct.sh` copié, runtime et préfixe privés, `/opt/game` en lecture seule) : `301` en 0,39 s.
+- ELDEN RING derrière `steam.exe` (préfixe privé, sans hôte Steam) : `301` en 2,7 s, plus d'erreur SCM ni d'erreur client de Wine.
+- ELDEN RING lancé depuis Obelisk, moteur de `4ad078c` posé à la main (avec le correctif SMC de `3932460`) : `301` en 2,74 s (au lieu de 241,5 s au rapport 10), plus d'erreur SCM. Aucune question Cloud, sauvegarde et binaires du jeu inchangés.
+
+Le jeu ne va pas plus loin, et ce n'est plus ce défaut. Le processus Wine d'`eldenring.exe` disparaît moins d'une seconde après le 301, sans message (sa sortie d'erreur est le `/dev/null` de `set_stdio_fd`), sans fenêtre ni device D3D12. MESURE, trace LKD d'un essai privé derrière `steam.exe` : après l'exec, le processus parle à wineserver, crée cinq fils ; l'un lance un programme avec sa sortie dans un tube (`clone3` puis `execve`, comme `popen`), qui finit en 127 (INFÉRÉ : `sh -c` d'une commande introuvable) ; puis les cinq fils sortent ensemble de leurs attentes par EINTR et le processus disparaît sans `exit_group` : un signal fatal. fexdarwin ne rapporte aucune faute. Le lancement direct du rapport 09 (`er-ge2-mtrack`, entrées-sorties du lanceur, donc sans ce défaut) finissait déjà de la même façon : toute la session s'arrêtait 2 s après le 301, sans sortie normale du jeu. INFÉRÉ : c'est le prochain verrou, indépendant de SCM_RIGHTS. Le nom de la commande et le signal ne sont pas identifiés. Le plantage `0xdeadba`, `SteamAPI_Init` et les fps ne sont pas atteints. Rapport : `sailover/build/experiments/eldenring-linux-20261010/reports/12-lkd-scm-devices.md`.
