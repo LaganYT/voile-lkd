@@ -39,6 +39,11 @@ LKD_WEAK int lkd_mm_find(lkd_mm *mm, uint64_t addr, int next, struct lkd_vma_inf
     (void)mm; (void)addr; (void)next; (void)out;
     return -LX_ENOENT;
 }
+LKD_WEAK int lkd_mm_find_nowait(lkd_mm *mm, uint64_t addr, struct lkd_vma_info *out)
+{
+    (void)mm; (void)addr; (void)out;
+    return -LX_ENOENT;
+}
 LKD_WEAK int lkd_mm_has_writable_shared_mapping(lkd_mm *mm, struct lkd_fdobj *file) { (void)mm; (void)file; return 0; }
 LKD_WEAK int lkd_mm_set_vma_name(lkd_mm *mm, uint64_t addr, uint64_t len, const char *name)
 {

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include "DarwinSignalDelegator.h"
 #include "CodeValidation.h"
+#include "CrashReport.h"
 #include "HitchLog.h"
 #include "LkdGlue.h"
 #include <FEXCore/Utils/GuestBase.h>
@@ -172,6 +173,7 @@ void DarwinSignalDelegator::Handler(int Sig, siginfo_t* Info, void* Uctx) {
   if (!T) {
     Say("[fexdarwin] fatal: signal %d at pc=%#llx addr=%p on a thread that is not a guest thread\n", Sig,
         (unsigned long long)DarwinCtx::GetPc(Uc), Info->si_addr);
+    CrashReport::Host(Uc, reinterpret_cast<uint64_t>(Info->si_addr), nullptr);
     _exit(128 + Sig);
   }
   if (!Self->HandleFault(T, Sig, Info, Uc)) {
@@ -323,6 +325,16 @@ bool DarwinSignalDelegator::HandleFault(GuestThread* T, int Sig, siginfo_t* Info
   return HandleGuestFault(T, Sig, Info, Uc);
 }
 
+namespace {
+// Code regions of the faulting thread for the crash report (set by Crash, read by CodeRegionOf).
+uint64_t CrashDispatcherBegin, CrashDispatcherEnd;
+const char* CodeRegionOf(uint64_t Addr) {
+  if (Addr >= CrashDispatcherBegin && Addr < CrashDispatcherEnd) return "FEX dispatcher";
+  GuestThread* T = CurrentGuestThread;
+  return T && G->CTX->IsAddressInCodeBuffer(T->State, Addr) ? "JIT code" : nullptr;
+}
+} // namespace
+
 void DarwinSignalDelegator::Crash(GuestThread* T, int Sig, siginfo_t* Info, ucontext_t* Uc, const char* Why) {
   auto* Th = T->State;
   const uint64_t PC = DarwinCtx::GetPc(Uc);
@@ -347,5 +359,9 @@ void DarwinSignalDelegator::Crash(GuestThread* T, int Sig, siginfo_t* Info, ucon
   Say("[fexdarwin]   guest rsi=%#llx rdi=%#llx rbp=%#llx rsp=%#llx r8=%#llx r9=%#llx\n", (unsigned long long)St.gregs[6],
       (unsigned long long)St.gregs[7], (unsigned long long)St.gregs[5], (unsigned long long)St.gregs[4], (unsigned long long)St.gregs[8],
       (unsigned long long)St.gregs[9]);
+  CrashDispatcherBegin = Config.DispatcherBegin;
+  CrashDispatcherEnd = Config.DispatcherEnd;
+  CrashReport::Host(Uc, reinterpret_cast<uint64_t>(Info->si_addr), CodeRegionOf);
+  CrashReport::Guest(T);
   _exit(128 + Sig);
 }

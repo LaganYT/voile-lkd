@@ -71,6 +71,9 @@ int64_t lkd_mm_brk(lkd_mm *mm, uint64_t new_brk);                          /* re
 /* VMA containing addr, or the first one above it when `next` is nonzero. Returns 0 and fills *out, or
  * -LX_ENOENT. */
 int lkd_mm_find(lkd_mm *mm, uint64_t addr, int next, struct lkd_vma_info *out);
+/* lkd_mm_find without waiting: -LX_EBUSY when the VMA table is being changed. For a report written from a fatal
+ * signal handler, where the faulting thread may hold the table's lock itself. */
+int lkd_mm_find_nowait(lkd_mm *mm, uint64_t addr, struct lkd_vma_info *out);
 /* Is any writable shared mapping of this file/memfd present? (fs asks for F_SEAL_WRITE: EBUSY.) */
 int lkd_mm_has_writable_shared_mapping(lkd_mm *mm, struct lkd_fdobj *file);
 /* fs wrote [off, off + len) of the file through its descriptor (write, pwrite...): drop the translated code

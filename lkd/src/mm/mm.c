@@ -965,6 +965,16 @@ int lkd_mm_find(lkd_mm *mm, uint64_t addr, int next, struct lkd_vma_info *out)
     return v ? 0 : -LX_ENOENT;
 }
 
+int lkd_mm_find_nowait(lkd_mm *mm, uint64_t addr, struct lkd_vma_info *out)
+{
+    if (!mm) return -LX_ENOENT;
+    if (pthread_rwlock_tryrdlock(&mm->vlock) != 0) return -LX_EBUSY;
+    mm_vma *v = vt_find(&mm->vt, addr);
+    if (v) fill_info(mm, v, out);
+    pthread_rwlock_unlock(&mm->vlock);
+    return v ? 0 : -LX_ENOENT;
+}
+
 static int same_file(const struct mm_backing *b, struct lkd_fdobj *file, uint64_t ino, uint64_t dev_major,
                      uint64_t dev_minor, int have_id)
 {

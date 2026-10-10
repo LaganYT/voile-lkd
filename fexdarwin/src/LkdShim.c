@@ -21,11 +21,12 @@ int fexdarwin_lkd_vma_at(uint64_t gva, uint64_t* start, uint64_t* end, uint32_t*
 }
 
 // VMA of task t containing gva, with its name ("" for anonymous) and file offset: for the thread dump, from any host thread.
-int fexdarwin_lkd_vma_describe(lkd_task* t, uint64_t gva, uint64_t* start, uint64_t* end, uint32_t* prot, uint64_t* off,
-                               char* name, unsigned long name_len) {
+// With nowait, -LX_EBUSY instead of waiting for the VMA table (the fatal fault report).
+static int vma_describe(lkd_task* t, uint64_t gva, uint64_t* start, uint64_t* end, uint32_t* prot, uint64_t* off,
+                        char* name, unsigned long name_len, int nowait) {
   if (!t || !t->mm) return -LX_ENOENT;
   struct lkd_vma_info v;
-  int r = lkd_mm_find(t->mm, gva, 0, &v);
+  int r = nowait ? lkd_mm_find_nowait(t->mm, gva, &v) : lkd_mm_find(t->mm, gva, 0, &v);
   if (r) return r;
   *start = v.start;
   *end = v.end;
@@ -37,6 +38,14 @@ int fexdarwin_lkd_vma_describe(lkd_task* t, uint64_t gva, uint64_t* start, uint6
     name[i] = 0;
   }
   return 0;
+}
+int fexdarwin_lkd_vma_describe(lkd_task* t, uint64_t gva, uint64_t* start, uint64_t* end, uint32_t* prot, uint64_t* off,
+                               char* name, unsigned long name_len) {
+  return vma_describe(t, gva, start, end, prot, off, name, name_len, 0);
+}
+int fexdarwin_lkd_vma_describe_nowait(lkd_task* t, uint64_t gva, uint64_t* start, uint64_t* end, uint32_t* prot, uint64_t* off,
+                                      char* name, unsigned long name_len) {
+  return vma_describe(t, gva, start, end, prot, off, name, name_len, 1);
 }
 
 // comm of task t (profile): the owner may rename it meanwhile, so the copy is only as exact as a log needs.

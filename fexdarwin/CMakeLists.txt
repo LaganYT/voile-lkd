@@ -30,6 +30,7 @@ endforeach()
 add_executable(fexdarwin-run
   src/main.cpp
   src/CodeValidation.cpp
+  src/CrashReport.cpp
   src/GuestMemory.cpp
   src/ElfLoader.cpp
   src/LinuxAbi.cpp

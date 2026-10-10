@@ -365,6 +365,28 @@ LT_TEST(one_address_space_per_process)
     down();
 }
 
+/* lkd_mm_find_nowait: the lookup of the fatal fault report, which must not wait for a VMA table the faulting thread
+ * may hold. Same answer as lkd_mm_find, -EBUSY while the table is being changed. */
+LT_TEST(find_nowait)
+{
+    up();
+    int64_t a = MMAP(0, 8192, RW, PA, -1, 0);
+    LT_CHECK(a > 0);
+    struct lkd_vma_info vi, vn;
+    LT_EQ(lkd_mm_find(T->mm, a + 4096, 0, &vi), 0);
+    LT_EQ(lkd_mm_find_nowait(T->mm, a + 4096, &vn), 0);
+    LT_EQ(vn.start, vi.start);
+    LT_EQ(vn.end, vi.end);
+    LT_EQ(vn.prot, vi.prot);
+    LT_ERRNO(lkd_mm_find_nowait(T->mm, a + 8192 + 0x100000, &vn), LX_ENOENT);
+    LT_ERRNO(lkd_mm_find_nowait(NULL, a, &vn), LX_ENOENT);
+    pthread_rwlock_wrlock(&T->mm->vlock); /* a writer holds the table */
+    LT_ERRNO(lkd_mm_find_nowait(T->mm, a + 4096, &vn), LX_EBUSY);
+    pthread_rwlock_unlock(&T->mm->vlock);
+    LT_EQ(lkd_mm_find_nowait(T->mm, a + 4096, &vn), 0);
+    down();
+}
+
 int main(void)
 {
     LT_RUN(anon_private_basic);
@@ -380,5 +402,6 @@ int main(void)
     LT_RUN(shared_anonymous);
     LT_RUN(check_range_rules);
     LT_RUN(one_address_space_per_process);
+    LT_RUN(find_nowait);
     return lt_finish();
 }
