@@ -42,3 +42,10 @@ Run:   `FEXDARWIN_LKD=1 FEXDARWIN_ROOT=<rootfs> FEXDARWIN_ROOT_RO=1 FEXDARWIN_BI
   `FEXDARWIN_BIND="/lkdsyn/w=<dir with bin>:ro" ... fexdarwin-run /lkdsyn/w/w30_scmdev /lkdsyn w`. With the
   fexdarwin-run of c545aa6 (same LKD as 97f227e): `SCM_RIGHTS of a dev object cannot cross host processes`, nothing
   received. After: W30 PASS.
+- w31_threadvm: thread creation when the engine has no host memory left for one more thread (each guest thread
+  reserves about 280 MiB of host address space). Creates up to 280 waiting threads (optional argument), then joins
+  them and creates 50 more; pthread_create may only fail with EAGAIN and the process must live. Run as above, and
+  once with `FEXDARWIN_GUEST_BASE=0x7f00000000`, which leaves the host the 30-odd GiB it had before 2026-10-10. With
+  the fexdarwin-run of b148137: the thread that found no room dies with `FATAL unhandled fault ... 0x10005297` (also
+  without the variable: the old window base left that little room). After: 280 threads; with the variable, 123
+  threads, then EAGAIN, W31 PASS.
