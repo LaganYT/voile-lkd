@@ -135,6 +135,11 @@ int sig_is_ignored_locked(lkd_task *t, int sig);
 void sig_force_locked(lkd_task *t, struct lkd_sigproc *sp, int sig, const struct lx_siginfo *info, struct sig_wakeset *ws);
 void sig_send_task_full(lkd_task *target, int sig, const struct lx_siginfo *info, int thread_directed, int force);
 
+/* ---- deliver.c -------------------------------------------------------------------------------- */
+/* With LKD_TRACE on, one stderr line for the signal that ends t's process: the thread it hit, then the faulting
+ * address (and rip when t is the calling thread) or the sender's pid. info may be NULL. */
+void sig_trace_death(lkd_task *t, int sig, const struct lx_siginfo *info, int current);
+
 /* ---- send.c ----------------------------------------------------------------------------------- */
 struct sig_sender {               /* the identity checked by kill permission */
     int32_t pid, tid, sid;

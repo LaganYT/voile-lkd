@@ -228,7 +228,9 @@ int sig_generate_locked(lkd_task *target, struct lkd_sigproc *sp, int sig, const
     }
     atomic_fetch_or(bits, bit);
     sig_sfd_notify_locked(sp, sig);
+    int dying = sp->group_exit;
     complete_signal(target, sp, sig, thread_directed, ws);
+    if (!dying && sp->group_exit && lkd_trace_level()) sig_trace_death(target, sig, info, 0);
     return 0;
 }
 

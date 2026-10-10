@@ -136,6 +136,28 @@ static int start_group_exit(lkd_task *t, int status)
     return die(t);
 }
 
+void sig_trace_death(lkd_task *t, int sig, const struct lx_siginfo *info, int current)
+{
+    int code = info ? info->si_code : LX_SI_KERNEL;
+    int fault = code > 0 && code != LX_SI_KERNEL &&
+                (sig == LX_SIGSEGV || sig == LX_SIGBUS || sig == LX_SIGILL || sig == LX_SIGFPE || sig == LX_SIGTRAP);
+    if (fault) {
+        const lkd_engine_ops *ops = lkd_engine();
+        lkd_regs r;
+        if (current && ops && ops->get_regs && ops->get_regs(t, &r) == 0)
+            lkd_log("pid %d dies of signal %d in tid %d: fault at %#llx (si_code %d), rip %#llx", t->proc->pid, sig,
+                    t->tid, (unsigned long long)info->u.fault.addr, code, (unsigned long long)r.rip);
+        else
+            lkd_log("pid %d dies of signal %d in tid %d: fault at %#llx (si_code %d)", t->proc->pid, sig, t->tid,
+                    (unsigned long long)info->u.fault.addr, code);
+    } else if (info && code <= 0) {
+        lkd_log("pid %d dies of signal %d in tid %d: sent by pid %d (si_code %d)", t->proc->pid, sig, t->tid,
+                info->u.kill.pid, code);
+    } else {
+        lkd_log("pid %d dies of signal %d in tid %d (si_code %d)", t->proc->pid, sig, t->tid, code);
+    }
+}
+
 /* ---- job control ------------------------------------------------------------------------------ */
 
 /* do_signal_stop: the first stop signal of a group stop marks every thread; each parks at its next
@@ -327,6 +349,7 @@ int lkd_signal_next(lkd_task *t)
             sig_unlock(sp);
             int status = sig;
             if (d == LX_SIGDFL_CORE && core_dumps(p)) status |= 0x80;
+            if (lkd_trace_level()) sig_trace_death(t, sig, &info, 1);
             return start_group_exit(t, status);
         }
 

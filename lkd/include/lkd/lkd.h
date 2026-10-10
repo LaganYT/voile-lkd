@@ -182,8 +182,9 @@ typedef struct lkd_config {
 } lkd_config;
 
 /* Optional, before lkd_init(): override defaults. The struct is copied. Environment (read in
- * lkd_init): LKD_TRACE=1 traces every syscall to stderr, LKD_LOG_ENOSYS=1 logs the first call of every
- * unimplemented syscall number. Returns 0 or -LX_EINVAL. */
+ * lkd_init): LKD_TRACE=1 traces every syscall to stderr, and the signal that ends a process (sender, or faulting
+ * address and rip); LKD_LOG_ENOSYS=1 logs the first call of every unimplemented syscall number. Returns 0 or
+ * -LX_EINVAL. */
 int lkd_init_config(const lkd_config *cfg);
 
 /* Initialize LKD once per host process (also in a fork child: not needed, state is inherited).

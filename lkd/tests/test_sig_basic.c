@@ -2,6 +2,9 @@
  * timed waits, suspend, job control, permissions, signalfd. Each case cites the Linux behaviour it
  * models (kernel/signal.c, arch/x86/kernel/signal.c, fs/signalfd.c at v6.12, and the man pages). */
 #include <pthread.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 
 #include "ltest.h"
@@ -394,6 +397,67 @@ LT_TEST(fatal_signal_kills_group)
     LT_EQ(lkd_sig_send_pid(NULL, t->proc->pid, LX_SIGUSR1, NULL), 0);
     lkd_sig_status(t, &st);
     LT_EQ(st.shdpnd & BIT(LX_SIGUSR1), 0);
+}
+
+/* stderr into a temporary file while f runs; returns what was written there. */
+static void capture_stderr(void (*f)(void *), void *arg, char *out, size_t cap)
+{
+    fflush(NULL);
+    int save = dup(2);
+    char path[] = "/tmp/lkd_sigtrace_XXXXXX";
+    int fd = mkstemp(path);
+    unlink(path);
+    dup2(fd, 2);
+    close(fd);
+    f(arg);
+    lseek(2, 0, SEEK_SET);
+    ssize_t n = read(2, out, cap - 1);
+    out[n > 0 ? n : 0] = 0;
+    dup2(save, 2);
+    close(save);
+}
+
+static void kill_self_term(void *arg)
+{
+    lkd_task *t = arg;
+    (void)sc(t, LKD_NR_kill, (uint64_t)t->proc->pid, LX_SIGTERM, 0, 0, 0, 0);
+    (void)lkd_signal_next(t);
+}
+
+static void segv_at_0x30(void *arg)
+{
+    lkd_task *t = arg;
+    lkd_fault(t, LX_SIGSEGV, LX_SEGV_MAPERR, 0x30, 4, 14);
+    (void)lkd_signal_next(t);
+}
+
+/* Debug output: with LKD_TRACE on, the signal that ends a process gets one line naming the thread and the sender,
+ * or the faulting address and rip. Off by default: the same deaths print nothing. */
+LT_TEST(fatal_signal_trace)
+{
+    char out[2048];
+    fake_engine_reset();
+    lkd_task *quiet = mk();
+    capture_stderr(kill_self_term, quiet, out, sizeof out);
+    LT_EQ(quiet->proc->exit_code & 0xff, LX_SIGTERM);
+    LT_CHECK(strstr(out, "dies of signal") == NULL);
+
+    lkd_trace_enable(1);
+    lkd_task *t = mk();
+    capture_stderr(kill_self_term, t, out, sizeof out);
+    char want[160];
+    snprintf(want, sizeof want, "pid %d dies of signal %d in tid %d: sent by pid %d (si_code 0)", t->proc->pid,
+             LX_SIGTERM, t->tid, t->proc->pid);
+    LT_CHECK(strstr(out, want) != NULL);
+
+    lkd_task *u = mk();
+    fake_cpu_of(u)->regs.rip = 0x401234;
+    capture_stderr(segv_at_0x30, u, out, sizeof out);
+    lkd_trace_enable(0);
+    LT_EQ(u->proc->exit_code & 0x7f, LX_SIGSEGV);
+    snprintf(want, sizeof want, "pid %d dies of signal %d in tid %d: fault at 0x30 (si_code %d), rip 0x401234",
+             u->proc->pid, LX_SIGSEGV, u->tid, LX_SEGV_MAPERR);
+    LT_CHECK(strstr(out, want) != NULL);
 }
 
 /* sigaltstack(2): ENOMEM under MINSIGSTKSZ, EINVAL for an unknown mode, old stack with SS_ONSTACK when
@@ -856,6 +920,7 @@ int main(void)
     LT_RUN(restart_decisions);
     LT_RUN(fault_delivery);
     LT_RUN(fatal_signal_kills_group);
+    LT_RUN(fatal_signal_trace);
     LT_RUN(sigaltstack_rules);
     LT_RUN(frame_failure_forces_sigsegv);
     LT_RUN(sigtimedwait_blocking);

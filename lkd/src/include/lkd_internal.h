@@ -91,6 +91,9 @@ void lkd_usermem_set_check_fn(int (*fn)(uint64_t gva, size_t len, int need_write
 
 /* One line on stderr, prefixed "lkd: ". Serialized; safe in any thread, not in signal handlers. */
 void lkd_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+/* LKD_TRACE level (or lkd_trace_enable): 0 off, the default; 1 or 2 on. Diagnostics gated on it cost one relaxed
+ * load when off. */
+int lkd_trace_level(void);
 /* Same, but only the first time this call site runs. */
 #define lkd_log_once(...) do { static _Atomic int lkd_once_; \
     if (!atomic_exchange(&lkd_once_, 1)) lkd_log(__VA_ARGS__); } while (0)
