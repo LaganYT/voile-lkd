@@ -1,7 +1,7 @@
 /* family.c: the family registry shared by every host process of one guest "machine".
  *
- * One unlinked temporary file, mapped MAP_SHARED: a header (pid counter, change counter, UTS names),
- * a table of process records and a table of thread records. A host fork() inherits the mapping, a host
+ * One unlinked temporary file, mapped MAP_SHARED: a header (pid counter, change counter, UTS names, pid of the
+ * family's init), a table of process records and a table of thread records. A host fork() inherits the mapping, a host
  * re-exec re-attaches through the fd exported by lkd_family_export. Writers take a process-local mutex
  * and then an fcntl byte lock on the file (released by the host kernel if the holder dies, rule 3.4 of
  * docs/CONVENTIONS.md). The pid counter is a lock-free shared atomic and never reuses an id during a
@@ -16,7 +16,7 @@
 #include "task_priv.h"
 
 #define FAM_MAGIC 0x4c4b4446u /* 'LKDF' */
-#define FAM_VERSION 1
+#define FAM_VERSION 2
 
 struct fam_hdr {
     uint32_t magic, version;
@@ -26,6 +26,7 @@ struct fam_hdr {
     uint32_t nprocs, ntids;
     char hostname[65];
     char domainname[65];
+    int32_t child_reaper;          /* pid of the family's init, 0 until its first process is registered */
 };
 
 static struct fam_hdr *g_hdr;
@@ -164,6 +165,8 @@ void fam_unlock(void)
 }
 
 uint32_t fam_seq(void) { return g_hdr ? atomic_load(&g_hdr->seq) : 0; }
+int32_t fam_child_reaper(void) { return g_hdr ? g_hdr->child_reaper : 0; }
+void fam_set_child_reaper(int32_t pid) { if (g_hdr && !g_hdr->child_reaper) g_hdr->child_reaper = pid; }
 void fam_bump(void) { if (g_hdr) atomic_fetch_add(&g_hdr->seq, 1); }
 
 struct fam_proc *fam_proc_at(int i) { return (g_procs && i >= 0 && i < FAM_MAX_PROCS) ? &g_procs[i] : NULL; }

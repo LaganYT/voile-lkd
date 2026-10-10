@@ -448,6 +448,52 @@ LT_TEST(real_other_process)
     close(up[0]); close(up[1]); close(go[0]); close(go[1]);
 }
 
+/* The parent of an orphan. Wine's double fork leaves the grandchild to the family's init (T here, its first process)
+ * when the middle process exits. /proc/<pid>/status and stat are rendered by the orphan's own process, which made no
+ * syscall since: they show the parent of the registry, not the copy taken at fork (the dead middle process). */
+LT_TEST(orphan_ppid_follows_its_reaper)
+{
+    lkd_procfs_set_backend(NULL);
+    int up[2], go[2];
+    LT_EQ(pipe(up), 0);
+    LT_EQ(pipe(go), 0);
+    int32_t me = T->proc->pid;
+    fflush(NULL);
+    int64_t mid = SC(T, fork, 0);
+    if (mid == 0) {
+        alarm(40);
+        int64_t g = SC(T, fork, 0);
+        if (g == 0) {
+            get64(go[0]);                                      /* no syscall until the entries were read */
+            child_exit_group(0);
+        }
+        put64(up[1], g);
+        child_exit_group(0);
+    }
+    LT_CHECK(mid > 0);
+    int64_t g = get64(up[0]);
+    LT_EQ(SC(T, wait4, (uint64_t)mid, 0, 0, 0), mid);
+    char path[96], want[32];
+    int64_t len;
+    snprintf(want, sizeof want, "\t%d", (int)me);
+    snprintf(path, sizeof path, "/proc/%d/status", (int)g);
+    char *s = slurp(path, &len);
+    LT_CHECK(s != NULL);
+    if (s) LT_STREQ(fline(s, "PPid"), want);
+    free(s);
+    snprintf(path, sizeof path, "/proc/%d/stat", (int)g);
+    s = slurp(path, &len);
+    int ppid = -1;
+    char state = 0;
+    char *q = s ? strrchr(s, ')') : NULL;
+    if (q) sscanf(q + 2, "%c %d", &state, &ppid);
+    LT_EQ(ppid, me);
+    free(s);
+    put64(go[1], 1);
+    LT_EQ(SC(T, wait4, (uint64_t)g, 0, 0, 0), g);
+    close(up[0]); close(up[1]); close(go[0]); close(go[1]);
+}
+
 /* /proc/<pid>/lkd_host_pid, LKD's own file (no Linux model): the macOS pid of the host process that carries the
  * process, as "%d\n". Read from the registry, for any process of the family, without asking the other process.
  * Reachable by name, absent from the listing. A zombie has no host process left: -ESRCH. Threads share the pid of
@@ -547,6 +593,7 @@ int main(void)
     LT_RUN(fake_access_decisions);
     LT_RUN(fake_zombie_and_fd_list);
     LT_RUN(real_other_process);
+    LT_RUN(orphan_ppid_follows_its_reaper);
     LT_RUN(host_pid_file);
     return lt_finish();
 }

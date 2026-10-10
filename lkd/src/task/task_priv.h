@@ -74,6 +74,11 @@ void fam_tid_free(struct fam_tid *r);
 struct fam_proc *fam_proc_at(int i);          /* slot i (0 .. FAM_MAX_PROCS-1) */
 struct fam_tid *fam_tid_at(int i);
 int fam_count_children(int32_t ppid);         /* live (non-zombie) records with that ppid */
+/* The family's init, Linux's child_reaper of a pid namespace: the first process registered with no parent in the
+ * family (the program the engine started, pid first_pid). Orphans without a live subreaper ancestor go to it. LKD
+ * hands out no pid 1 by default, so it keeps its own pid. Set once; 0 before. */
+int32_t fam_child_reaper(void);
+void fam_set_child_reaper(int32_t pid);
 int fam_count_live(void);
 /* Shared UTS strings (sethostname is EPERM for the guest, the runtime sets them once). */
 const char *fam_hostname(void);

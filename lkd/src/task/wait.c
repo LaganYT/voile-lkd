@@ -57,6 +57,96 @@ static int cld_code_of(int status)
     return (status & 0x80) ? LX_CLD_DUMPED : LX_CLD_KILLED;
 }
 
+/* ---- Reparenting ------------------------------------------------------------------------------------ */
+
+/* find_new_reaper() and find_child_reaper(): the nearest live ancestor marked PR_SET_CHILD_SUBREAPER, else the
+ * family's init (fam_child_reaper, the program the engine started), else 1: no live process of the family takes
+ * the orphans. That last case is the death of the init itself: Linux then ends the whole pid namespace
+ * (zap_pid_ns_processes); in LKD the engine's supervisor ends the family's host processes. Needs fam_lock. */
+static int32_t find_reaper_locked(int32_t pid)
+{
+    struct fam_proc *r = fam_proc_find(pid);
+    int32_t p = r ? r->info.ppid : 0;
+    for (int guard = 0; p > 0 && guard < FAM_MAX_PROCS; guard++) {
+        struct fam_proc *a = fam_proc_find(p);
+        if (!a) break;
+        if (!(atomic_load(&a->flags) & RF_ZOMBIE) && a->info.child_subreaper) return p;
+        if (a->info.ppid == p) break;
+        p = a->info.ppid;
+    }
+    int32_t init = fam_child_reaper();
+    struct fam_proc *ir = init != pid ? fam_proc_find(init) : NULL;
+    if (ir && !(atomic_load(&ir->flags) & RF_ZOMBIE)) return init;
+    return 1;
+}
+
+struct note { int32_t to, pid, status, exit_signal; uint32_t uid; };
+
+/* What the death of parents leaves to do once fam_lock is released. */
+struct orphans {
+    struct { int32_t pid, sig, from; uint32_t from_uid; } pdeath[TASK_MAX_CHILDREN];
+    int npd;
+    struct note notes[TASK_MAX_CHILDREN * 2 + 8];
+    int nn;
+};
+
+/* forget_original_parent() and reparent_leader(): every child of the dead process goes to the reaper, gets SIGCHLD
+ * as its exit signal ("we don't want people slaying init") and its parent-death signal. A zombie among them is
+ * announced to the reaper, or released when no live process takes it. Needs fam_lock; orphans_notify sends. */
+static void reparent_children_locked(int32_t dead, uint32_t dead_uid, const struct fam_proc *self, struct orphans *o)
+{
+    int32_t reaper = find_reaper_locked(dead);
+    int reaper_live = fam_proc_find(reaper) != NULL;
+    for (int i = 0; i < FAM_MAX_PROCS; i++) {
+        struct fam_proc *c = fam_proc_at(i);
+        if (!c->info.pid || c == self || c->info.ppid != dead) continue;
+        uint32_t cf = atomic_load(&c->flags);
+        __atomic_store_n(&c->info.ppid, reaper, __ATOMIC_RELEASE);
+        __atomic_store_n(&c->info.exit_signal, LX_SIGCHLD, __ATOMIC_RELEASE);
+        c->creator_tid = reaper_live ? reaper : 0;
+        if (c->pdeathsig && !(cf & RF_ZOMBIE) && o->npd < TASK_MAX_CHILDREN) {
+            o->pdeath[o->npd].pid = c->info.pid;
+            o->pdeath[o->npd].sig = c->pdeathsig;
+            o->pdeath[o->npd].from = dead;
+            o->pdeath[o->npd].from_uid = dead_uid;
+            o->npd++;
+        }
+        if (cf & RF_ZOMBIE) {
+            if (!reaper_live) fam_proc_free(c); /* nobody can ever reap it */
+            else if (o->nn < (int)(sizeof o->notes / sizeof o->notes[0]))
+                o->notes[o->nn++] = (struct note){ reaper, c->info.pid, c->info.wait_status, LX_SIGCHLD, c->info.uid };
+        }
+    }
+}
+
+static int notify_parent(int32_t ppid, int32_t pid, uint32_t uid, int exit_signal, int status);
+
+/* The parent-death signals: SEND_SIG_NOINFO from the dying parent, so SI_USER with its pid and uid. sender is that
+ * parent when it runs its own exit, NULL when its host process died without it (the siginfo is then built here).
+ * Then SIGCHLD to the reaper for each zombie it received; one it does not want is released at once. */
+static void orphans_notify(lkd_task *sender, const struct orphans *o)
+{
+    for (int i = 0; i < o->npd; i++) {
+        struct lx_siginfo si;
+        memset(&si, 0, sizeof si);
+        si.si_signo = o->pdeath[i].sig;
+        si.si_code = LX_SI_USER;
+        si.u.kill.pid = o->pdeath[i].from;
+        si.u.kill.uid = o->pdeath[i].from_uid;
+        lkd_sig_send_pid(sender, o->pdeath[i].pid, o->pdeath[i].sig, sender ? NULL : &si);
+    }
+    for (int i = 0; i < o->nn; i++) {
+        const struct note *n = &o->notes[i];
+        if (notify_parent(n->to, n->pid, n->uid, n->exit_signal, n->status)) {
+            fam_lock();
+            struct fam_proc *c = fam_proc_find(n->pid);
+            if (c && (atomic_load(&c->flags) & RF_ZOMBIE)) fam_proc_free(c);
+            fam_unlock();
+        }
+        lkd_task_wake_waiters(n->to);
+    }
+}
+
 /* Poll host children without blocking; children that died without publishing become zombies. */
 static void poll_host_children(void)
 {
@@ -81,6 +171,7 @@ static void poll_host_children(void)
     pthread_mutex_unlock(&g_kids_lock);
     if (!nd) return;
     int32_t notify_parent[MAX_HOSTKIDS], notify_child[MAX_HOSTKIDS], notify_status[MAX_HOSTKIDS], nn = 0;
+    struct orphans *o = calloc(1, sizeof *o);
     fam_lock();
     for (int i = 0; i < nd; i++) {
         struct fam_proc *r = fam_proc_find(dead[i].guest);
@@ -93,12 +184,15 @@ static void poll_host_children(void)
         atomic_fetch_or(&r->flags, RF_ZOMBIE | RF_VFORK_DONE);
         lkd_log("guest pid %d (host child) died without exit notification, host status -> wait status 0x%x",
                 dead[i].guest, dead[i].status);
+        if (o) reparent_children_locked(r->info.pid, r->info.uid, r, o); /* its children are orphans all the same */
         notify_parent[nn] = r->info.ppid;
         notify_child[nn] = r->info.pid;
         notify_status[nn] = dead[i].status;
         nn++;
     }
     fam_unlock();
+    if (o) orphans_notify(NULL, o);
+    free(o);
     for (int i = 0; i < nn; i++) {
         int st = notify_status[i];
         lkd_sig_child_event(notify_parent[i], notify_child[i], 0, cld_code_of(st),
@@ -129,19 +223,6 @@ static void host_reap(int32_t guest)
 }
 
 /* ---- Death of a process ----------------------------------------------------------------------------- */
-
-static int32_t find_reaper_locked(int32_t pid)
-{
-    struct fam_proc *r = fam_proc_find(pid);
-    int32_t p = r ? r->info.ppid : 1;
-    for (int guard = 0; p > 1 && guard < FAM_MAX_PROCS; guard++) {
-        struct fam_proc *a = fam_proc_find(p);
-        if (!a) break;
-        if (!(atomic_load(&a->flags) & RF_ZOMBIE) && a->info.child_subreaper) return p;
-        p = a->info.ppid;
-    }
-    return 1;
-}
 
 /* do_notify_parent(): returns 1 when the child must be released at once (parent ignores SIGCHLD or
  * has SA_NOCLDWAIT, decided by the sig module). */
@@ -176,19 +257,17 @@ int proc_die(lkd_task *t, int status)
     struct lx_rusage ru;
     wait_rusage_now(&ru);
 
-    struct note { int32_t to, pid, sig, status, exit_signal; uint32_t uid; } notes[TASK_MAX_CHILDREN * 2 + 8];
+    struct note notes[TASK_MAX_CHILDREN];
     int nn = 0;
-    struct { int32_t pid, sig; } pdeath[TASK_MAX_CHILDREN];
-    int npd = 0;
-    int32_t me = p->pid, parent = 0;
+    struct orphans o;
+    o.npd = o.nn = 0;
+    int32_t me = p->pid, parent = 0, exit_signal = p->exit_signal;
     uint32_t uid = p->cred.uid;
     int release_me = 0;
     pid_t host = getpid();
 
     fam_lock();
     struct fam_proc *r = w->rec && w->rec->info.pid == me ? w->rec : fam_proc_find(me);
-    int32_t reaper = find_reaper_locked(me);
-    int have_init = fam_proc_find(1) != NULL;
     if (r) {
         r->info.state = LKD_PS_ZOMBIE;
         r->info.wait_status = status;
@@ -197,6 +276,7 @@ int proc_die(lkd_task *t, int status)
         r->ru = ru;
         atomic_fetch_or(&r->flags, RF_ZOMBIE | RF_VFORK_DONE);
         parent = r->info.ppid;
+        exit_signal = r->info.exit_signal; /* SIGCHLD once reparented */
         for (int i = 0; i < FAM_MAX_TIDS; i++) {
             struct fam_tid *tr = fam_tid_at(i);
             if (!tr->info.tid || tr->info.tgid != me) continue;
@@ -206,22 +286,9 @@ int proc_die(lkd_task *t, int status)
     }
     for (int i = 0; i < FAM_MAX_PROCS; i++) {
         struct fam_proc *c = fam_proc_at(i);
-        if (!c->info.pid || c == r) continue;
+        if (!c->info.pid || c == r || c->info.ppid == me) continue;
         uint32_t cf = atomic_load(&c->flags);
-        if (c->info.ppid == me) {
-            /* forget_original_parent(): every child goes to the reaper, gets its pdeath signal */
-            __atomic_store_n(&c->info.ppid, reaper, __ATOMIC_RELEASE);
-            if (c->pdeathsig && !(cf & RF_ZOMBIE) && npd < TASK_MAX_CHILDREN) {
-                pdeath[npd].pid = c->info.pid;
-                pdeath[npd].sig = c->pdeathsig;
-                npd++;
-            }
-            if (cf & RF_ZOMBIE) {
-                if (reaper == 1 && !have_init) fam_proc_free(c); /* nobody can ever reap it */
-                else if (nn < (int)(sizeof notes / sizeof notes[0]))
-                    notes[nn++] = (struct note){ reaper, c->info.pid, 0, c->info.wait_status, c->info.exit_signal, c->info.uid };
-            }
-        } else if (!w->cohosted && (cf & RF_COHOSTED) && !(cf & RF_ZOMBIE) && c->info.host_pid == host) {
+        if (!w->cohosted && (cf & RF_COHOSTED) && !(cf & RF_ZOMBIE) && c->info.host_pid == host) {
             /* A vm-sharing child process lives in our host process: it ends with it (documented gap:
              * Linux would let it run). Reported as killed by SIGKILL. */
             c->info.state = LKD_PS_ZOMBIE;
@@ -230,13 +297,14 @@ int proc_die(lkd_task *t, int status)
             c->cld_code = LX_CLD_KILLED;
             atomic_fetch_or(&c->flags, RF_ZOMBIE | RF_VFORK_DONE);
             if (nn < (int)(sizeof notes / sizeof notes[0]))
-                notes[nn++] = (struct note){ c->info.ppid, c->info.pid, 0, LX_SIGKILL, c->info.exit_signal, c->info.uid };
+                notes[nn++] = (struct note){ c->info.ppid, c->info.pid, LX_SIGKILL, c->info.exit_signal, c->info.uid };
         }
     }
-    if (r && (parent <= 0 || (parent == 1 && !have_init) || !fam_proc_find(parent))) release_me = 1;
+    reparent_children_locked(me, uid, r, &o);
+    if (r && (parent <= 0 || !fam_proc_find(parent))) release_me = 1;
     fam_unlock();
 
-    for (int i = 0; i < npd; i++) lkd_sig_send_pid(t, pdeath[i].pid, pdeath[i].sig, NULL);
+    orphans_notify(t, &o);
     for (int i = 0; i < nn; i++) {
         if (notify_parent(notes[i].to, notes[i].pid, notes[i].uid, notes[i].exit_signal ? notes[i].exit_signal : LX_SIGCHLD,
                           notes[i].status)) {
@@ -247,7 +315,7 @@ int proc_die(lkd_task *t, int status)
         }
         lkd_task_wake_waiters(notes[i].to);
     }
-    if (r && !release_me && notify_parent(parent, me, uid, p->exit_signal, status)) release_me = 1;
+    if (r && !release_me && notify_parent(parent, me, uid, exit_signal, status)) release_me = 1;
     if (release_me) {
         fam_lock();
         struct fam_proc *c = fam_proc_find(me);

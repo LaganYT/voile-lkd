@@ -68,6 +68,13 @@ Fichier propre à LKD, absent de Linux : le PID macOS du processus hôte qui por
 - Usage : `guest/steam-hostpid.so` (racine du dépôt). Le `steamclient.so` de Valve annonce `getpid()` au moteur Steam macOS d'Obelisk, qui coupe le tuyau si ce PID n'est pas un processus macOS vivant.
 - Tests : `test_procfs_other` cas `host_pid_file` (registre factice, soi, fork réel vu des deux côtés, zombie, thread, absence du listage) ; témoin invité `tests/glibc-x86_64/hostpid.sh` (w25).
 
+## Parent d'un autre processus : `PPid` lu dans le registre (2026-10-10)
+
+- `status` (`PPid`) et `stat` (champs 4, 5, 6 et 38) d'un processus sont rendus par son propre processus hôte. Le rendu prenait sa copie locale de ppid, pgid, sid et du signal de sortie, que le processus ne relit dans le registre que lorsqu'il appelle lui-même `getppid`, `getpgrp`, etc.
+- Effet mesuré : un orphelin qui n'avait pas fait cet appel montrait encore son parent mort. Sonde ppid du rapport ELDEN RING 07 : `ping.exe` avec `PPid 52`, le processus intermédiaire du double fork de Wine, sorti depuis longtemps.
+- `snap_get` relit maintenant ces champs dans le registre (`lkd_proc_refresh_ids`) avant chaque rendu. Un zombie était déjà rendu depuis le registre.
+- Test : `test_procfs_other` cas `orphan_ppid_follows_its_reaper`. ÉCHEC sans la relecture (`PPid 4`, le processus intermédiaire mort), PASSE avec.
+
 ## Fichiers volontairement absents (ENOENT)
 
 `/sys/devices/virtual/dmi/id/*`, `/sys/class`, `/sys/bus/pci`, `/proc/bus/pci/devices` (sondes EAC, absence acceptée), `/proc/<pid>/io` (pas de comptage d'E/S par tâche), `map_files`, `ns`, `sched`, `stack`, `pagemap`, `oom_*`, `attr`, `loginuid`, `uid_map`, `/proc/sys/kernel/yama`, `/proc/net/tcp` et voisins, `/proc/stat` lignes `intr`, `ctxt`, `softirq`, `processes`. `/proc/<pid>/net/dev` ne porte que l'en-tête (aucune interface traduite). Si `inotify_init1` n'a pas de propriétaire, `/proc/sys/fs/inotify` n'existe pas.

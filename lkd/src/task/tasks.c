@@ -314,7 +314,6 @@ void proc_publish_locked(struct lkd_proc *p, lkd_task *leader)
         if (leader) i->state = task_state_char(leader);
         i->nthreads = p->nthreads;
     }
-    i->exit_signal = p->exit_signal;
     i->uid = p->cred.uid; i->euid = p->cred.euid; i->gid = p->cred.gid; i->egid = p->cred.egid;
     i->dumpable = p->dumpable;
     i->child_subreaper = p->child_subreaper;
@@ -359,7 +358,11 @@ int proc_register_locked(struct lkd_proc *p, lkd_task *leader, int32_t leader_ti
     r->info.pgid = p->pgid;
     r->info.sid = p->sid;
     r->info.state = LKD_PS_RUNNING;
+    /* the record keeps the exit signal from here on: reparenting changes it (wait.c) */
+    r->info.exit_signal = p->exit_signal;
     r->creator_tid = creator_tid;
+    /* no parent in the family: the program the engine started, the family's init if it is the first */
+    if (!fam_proc_find(p->ppid)) fam_set_child_reaper(p->pid);
     if (p->wait && p->wait->cohosted) atomic_fetch_or(&r->flags, RF_COHOSTED);
     p->wait->rec = r;
     if (comm) copy_comm(r->info.comm, comm);
@@ -465,6 +468,7 @@ void lkd_proc_refresh_ids(struct lkd_proc *p)
     p->ppid = __atomic_load_n(&r->info.ppid, __ATOMIC_ACQUIRE);
     p->pgid = __atomic_load_n(&r->info.pgid, __ATOMIC_ACQUIRE);
     p->sid = __atomic_load_n(&r->info.sid, __ATOMIC_ACQUIRE);
+    p->exit_signal = __atomic_load_n(&r->info.exit_signal, __ATOMIC_ACQUIRE);
 }
 
 void lkd_proc_set_layout(lkd_task *t, const struct lkd_proc_layout *l)

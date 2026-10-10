@@ -61,7 +61,7 @@ struct lkd_proc {
     _Atomic int refs;
     pthread_mutex_t lock;
     int32_t pid;                   /* == tgid == tid of the main thread, family-unique */
-    int32_t ppid, pgid, sid;       /* [reg] refreshed through lkd_proc_refresh_ids */
+    int32_t ppid, pgid, sid;       /* [reg] refreshed (with exit_signal) through lkd_proc_refresh_ids */
     int32_t host_pid;              /* getpid() of the macOS process */
     struct lkd_creds cred;         /* [lock] simplification: per process, not per thread */
     struct lx_rlimit rlimits[LX_RLIM_NLIMITS]; /* [lock] */
@@ -69,7 +69,7 @@ struct lkd_proc {
     uint8_t dumpable;              /* [lock] 0, 1, 2 as PR_SET_DUMPABLE */
     uint8_t no_new_privs;
     uint8_t child_subreaper;
-    int32_t exit_signal;           /* signal to the parent when the process dies */
+    int32_t exit_signal;           /* [reg] signal to the parent when the process dies (SIGCHLD once reparented) */
     char *exe_path;                /* guest path (malloc), target of /proc/<pid>/exe */
     char *cmdline; size_t cmdline_len;   /* NUL-separated snapshot at exec (malloc) */
     char *environ_snap; size_t environ_len;

@@ -132,6 +132,9 @@ static void snap_get(lkd_task *tk, struct snap *s)
     memset(s, 0, sizeof *s);
     s->tk = tk;
     struct lkd_proc *p = tk->proc;
+    /* ppid, pgid, sid and the exit signal live in the family registry: a parent that died, a setpgid by the
+     * parent, change them there, and the process' own copy follows only when it refreshes it */
+    lkd_proc_refresh_ids(p);
     pthread_mutex_lock(&p->lock);
     s->cred = p->cred;
     memcpy(s->rl, p->rlimits, sizeof s->rl);

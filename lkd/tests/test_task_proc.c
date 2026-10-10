@@ -338,14 +338,17 @@ LT_TEST(orphan_reparented_to_subreaper)
             put32(pfd[1], pp);                                  /* after the middle process died */
             child_exit_group(gc, 9);
         }
-        int32_t seen = get32(mid_pipe[0]);
+        int32_t seen = get32(mid_pipe[0]), inherited = -1;
+        sct(c, LKD_NR_prctl, LX_PR_GET_CHILD_SUBREAPER, P(&inherited), 0, 0, 0);
         put32(pfd[1], (int32_t)g);
         put32(pfd[1], seen);
+        put32(pfd[1], inherited);
         child_exit_group(c, 1);
     }
     LT_CHECK(mid > 0);
-    int32_t g = get32(pfd[0]), before = get32(pfd[0]), after = get32(pfd[0]);
+    int32_t g = get32(pfd[0]), before = get32(pfd[0]), inherited = get32(pfd[0]), after = get32(pfd[0]);
     LT_EQ(before, (int32_t)mid);
+    LT_EQ(inherited, 0);                                        /* is_child_subreaper is not inherited by fork */
     LT_EQ(after, me);
     int status = -1;
     LT_EQ(SC4(wait4, mid, P(&status), 0, 0), mid);
@@ -354,6 +357,242 @@ LT_TEST(orphan_reparented_to_subreaper)
     LT_EQ(status, 9 << 8);
     LT_EQ(SC2(prctl, LX_PR_SET_CHILD_SUBREAPER, 0), 0);
     close(pfd[0]); close(pfd[1]); close(mid_pipe[0]); close(mid_pipe[1]);
+}
+
+/* Signal helpers for the orphan cases: block a signal so that it is queued, take it with rt_sigtimedwait. */
+static uint64_t block_sig(lkd_task *t, int sig)
+{
+    uint64_t set = LX_SIGBIT(sig), old = 0;
+    sct(t, LKD_NR_rt_sigprocmask, LX_SIG_BLOCK, P(&set), P(&old), 8, 0);
+    return old;
+}
+static void set_mask(lkd_task *t, uint64_t mask) { sct(t, LKD_NR_rt_sigprocmask, LX_SIG_SETMASK, P(&mask), 0, 8, 0); }
+static int64_t take_sig(lkd_task *t, int sig, int64_t secs, struct lx_siginfo *si)
+{
+    uint64_t set = LX_SIGBIT(sig);
+    struct lx_timespec ts = { secs, 0 };
+    memset(si, 0, sizeof *si);
+    return sct(t, LKD_NR_rt_sigtimedwait, P(&set), P(si), P(&ts), 8, 0);
+}
+static void drain_sig(lkd_task *t, int sig)
+{
+    struct lx_siginfo si;
+    while (take_sig(t, sig, 0, &si) == sig) { }
+}
+
+/* Wine starts every process through a double fork (ntdll/unix/process.c, spawn_process): the middle process exits at
+ * once and the grandchild is an orphan. With no subreaper, Linux gives it to the init of its pid namespace
+ * (find_child_reaper); the family's init is its first process, here T. getppid() and the registry show T as soon as
+ * the middle process is gone, T gets SIGCHLD for the orphan's death and reaps it with wait4. */
+LT_TEST(double_fork_orphan_goes_to_family_init)
+{
+    int up[2], mid_pipe[2], go[2];
+    LT_EQ(pipe(up), 0);
+    LT_EQ(pipe(mid_pipe), 0);
+    LT_EQ(pipe(go), 0);
+    int32_t v = -1;
+    LT_EQ(SC2(prctl, LX_PR_GET_CHILD_SUBREAPER, P(&v)), 0);
+    LT_EQ(v, 0);                                                /* the init role alone, no subreaper */
+    uint64_t old = block_sig(T, LX_SIGCHLD);
+    drain_sig(T, LX_SIGCHLD);
+    int32_t me = T->proc->pid;
+    fflush(NULL);
+    int64_t mid = SC1(fork, 0);
+    if (mid == 0) {
+        alarm(20);
+        lkd_task *c = lkd_current();
+        int64_t g = sct(c, LKD_NR_fork, 0, 0, 0, 0, 0);
+        if (g == 0) {
+            lkd_task *gc = lkd_current();
+            put32(mid_pipe[1], (int32_t)sct(gc, LKD_NR_getppid, 0, 0, 0, 0, 0));
+            get32(go[0]);
+            put32(up[1], (int32_t)sct(gc, LKD_NR_getppid, 0, 0, 0, 0, 0));
+            child_exit_group(gc, 9);
+        }
+        put32(up[1], (int32_t)g);
+        put32(up[1], get32(mid_pipe[0]));
+        child_exit_group(c, 0);
+    }
+    LT_CHECK(mid > 0);
+    int32_t g = get32(up[0]), before = get32(up[0]);
+    LT_EQ(before, (int32_t)mid);
+    int status = -1;
+    LT_EQ(SC4(wait4, mid, P(&status), 0, 0), mid);
+    LT_EQ(status, 0);
+    struct lx_siginfo si;
+    LT_EQ(take_sig(T, LX_SIGCHLD, 3, &si), LX_SIGCHLD);        /* the middle process' own death */
+    LT_EQ(si.u.chld.pid, mid);
+    lkd_proc_info pi;
+    LT_EQ(lkd_proc_lookup(g, &pi), 0);
+    LT_EQ(pi.ppid, me);                                         /* at once, by the death of the middle process */
+    LT_EQ(pi.state, 'R');
+    put32(go[1], 1);
+    LT_EQ(get32(up[0]), me);                                    /* getppid() of the orphan */
+    LT_EQ(take_sig(T, LX_SIGCHLD, 3, &si), LX_SIGCHLD);        /* its death reaches its new parent */
+    LT_EQ(si.si_code, LX_CLD_EXITED);
+    LT_EQ(si.u.chld.pid, g);
+    LT_EQ(si.u.chld.status, 9);
+    LT_EQ(SC4(wait4, -1, P(&status), 0, 0), g);
+    LT_EQ(status, 9 << 8);
+    LT_ERRNO(SC4(wait4, -1, P(&status), LX_WNOHANG, 0), LX_ECHILD);
+    LT_ERRNO(lkd_proc_lookup(g, &pi), LX_ESRCH);
+    set_mask(T, old);
+    close(up[0]); close(up[1]); close(mid_pipe[0]); close(mid_pipe[1]); close(go[0]); close(go[1]);
+}
+
+/* PR_SET_PDEATHSIG: the death of the parent sends the signal to the child (forget_original_parent), from the dying
+ * parent (SEND_SIG_NOINFO: SI_USER with its pid), and the child is reparented. */
+LT_TEST(pdeath_signal_when_the_parent_dies)
+{
+    int up[2], mid_pipe[2];
+    LT_EQ(pipe(up), 0);
+    LT_EQ(pipe(mid_pipe), 0);
+    int32_t me = T->proc->pid;
+    fflush(NULL);
+    int64_t mid = SC1(fork, 0);
+    if (mid == 0) {
+        alarm(20);
+        lkd_task *c = lkd_current();
+        int32_t mpid = c->proc->pid;
+        int64_t g = sct(c, LKD_NR_fork, 0, 0, 0, 0, 0);
+        if (g == 0) {
+            lkd_task *gc = lkd_current();
+            block_sig(gc, LX_SIGUSR1);
+            int32_t v = -1;
+            sct(gc, LKD_NR_prctl, LX_PR_SET_PDEATHSIG, LX_SIGUSR1, 0, 0, 0);
+            sct(gc, LKD_NR_prctl, LX_PR_GET_PDEATHSIG, P(&v), 0, 0, 0);
+            put32(mid_pipe[1], v);                                      /* armed: the middle process may go */
+            int32_t pp = mpid;
+            for (int i = 0; i < 400 && pp == mpid; i++) {
+                usleep(10000);
+                pp = (int32_t)sct(gc, LKD_NR_getppid, 0, 0, 0, 0, 0);
+            }
+            struct lx_siginfo si;
+            int64_t got = take_sig(gc, LX_SIGUSR1, 3, &si);
+            put32(up[1], pp);
+            put32(up[1], (int32_t)got);
+            put32(up[1], si.si_code);
+            put32(up[1], si.u.kill.pid);
+            child_exit_group(gc, 0);
+        }
+        put32(up[1], (int32_t)g);
+        put32(up[1], get32(mid_pipe[0]));
+        child_exit_group(c, 0);
+    }
+    LT_CHECK(mid > 0);
+    int32_t g = get32(up[0]), armed = get32(up[0]);
+    LT_EQ(armed, LX_SIGUSR1);                                   /* PR_GET_PDEATHSIG */
+    int status = -1;
+    LT_EQ(SC4(wait4, mid, P(&status), 0, 0), mid);
+    int32_t pp = get32(up[0]), got = get32(up[0]), code = get32(up[0]), from = get32(up[0]);
+    LT_EQ(pp, me);
+    LT_EQ(got, LX_SIGUSR1);
+    LT_EQ(code, LX_SI_USER);
+    LT_EQ(from, (int32_t)mid);
+    LT_EQ(SC4(wait4, g, P(&status), 0, 0), g);
+    LT_EQ(status, 0);
+    close(up[0]); close(up[1]); close(mid_pipe[0]); close(mid_pipe[1]);
+}
+
+/* reparent_leader(): an orphan created with another exit signal (here none: a "clone" child that only __WCLONE
+ * sees) gets SIGCHLD, so its new parent hears of its death and waits for it without __WCLONE. */
+LT_TEST(orphan_exit_signal_becomes_sigchld)
+{
+    int up[2], go[2];
+    LT_EQ(pipe(up), 0);
+    LT_EQ(pipe(go), 0);
+    uint64_t old = block_sig(T, LX_SIGCHLD);
+    drain_sig(T, LX_SIGCHLD);
+    int32_t me = T->proc->pid;
+    fflush(NULL);
+    int64_t mid = SC1(fork, 0);
+    if (mid == 0) {
+        alarm(20);
+        lkd_task *c = lkd_current();
+        int64_t g = sct(c, LKD_NR_clone, 0, 0, 0, 0, 0);      /* no exit signal */
+        if (g == 0) {
+            get32(go[0]);
+            child_exit_group(lkd_current(), 5);
+        }
+        lkd_proc_info pi;
+        put32(up[1], (int32_t)g);
+        put32(up[1], lkd_proc_lookup((int32_t)g, &pi) == 0 ? pi.exit_signal : -1);
+        child_exit_group(c, 0);
+    }
+    LT_CHECK(mid > 0);
+    int32_t g = get32(up[0]), esig = get32(up[0]);
+    LT_EQ(esig, 0);
+    int status = -1;
+    LT_EQ(SC4(wait4, mid, P(&status), 0, 0), mid);
+    struct lx_siginfo si;
+    LT_EQ(take_sig(T, LX_SIGCHLD, 3, &si), LX_SIGCHLD);
+    LT_EQ(si.u.chld.pid, mid);
+    lkd_proc_info pi;
+    LT_EQ(lkd_proc_lookup(g, &pi), 0);
+    LT_EQ(pi.ppid, me);
+    LT_EQ(pi.exit_signal, LX_SIGCHLD);
+    put32(go[1], 1);
+    LT_EQ(take_sig(T, LX_SIGCHLD, 3, &si), LX_SIGCHLD);
+    LT_EQ(si.u.chld.pid, g);
+    LT_EQ(si.u.chld.status, 5);
+    LT_EQ(SC4(wait4, g, P(&status), 0, 0), g);                 /* no __WCLONE needed any more */
+    LT_EQ(status, 5 << 8);
+    set_mask(T, old);
+    close(up[0]); close(up[1]); close(go[0]); close(go[1]);
+}
+
+/* A parent whose host process is killed without running its exit path (host SIGKILL, engine crash): the waiter of
+ * its host process publishes its death (poll_host_children), and its children are orphans all the same, reparented
+ * with their parent-death signal (SI_USER from the dead parent). */
+LT_TEST(orphans_of_a_killed_host_process)
+{
+    int up[2], mid_pipe[2], go[2];
+    LT_EQ(pipe(up), 0);
+    LT_EQ(pipe(mid_pipe), 0);
+    LT_EQ(pipe(go), 0);
+    int32_t me = T->proc->pid;
+    fflush(NULL);
+    int64_t mid = SC1(fork, 0);
+    if (mid == 0) {
+        alarm(20);
+        lkd_task *c = lkd_current();
+        int64_t g = sct(c, LKD_NR_fork, 0, 0, 0, 0, 0);
+        if (g == 0) {
+            lkd_task *gc = lkd_current();
+            block_sig(gc, LX_SIGTERM);
+            sct(gc, LKD_NR_prctl, LX_PR_SET_PDEATHSIG, LX_SIGTERM, 0, 0, 0);
+            put32(mid_pipe[1], 1);
+            get32(go[0]);
+            struct lx_siginfo si;
+            int64_t got = take_sig(gc, LX_SIGTERM, 3, &si);
+            put32(up[1], (int32_t)sct(gc, LKD_NR_getppid, 0, 0, 0, 0, 0));
+            put32(up[1], (int32_t)got);
+            put32(up[1], si.si_code);
+            put32(up[1], si.u.kill.pid);
+            child_exit_group(gc, 3);
+        }
+        get32(mid_pipe[0]);
+        put32(up[1], (int32_t)g);
+        raise(SIGKILL);                                         /* no exit path: no proc_die */
+        _exit(1);
+    }
+    LT_CHECK(mid > 0);
+    int32_t g = get32(up[0]);
+    int status = -1;
+    LT_EQ(SC4(wait4, mid, P(&status), 0, 0), mid);
+    LT_CHECK(LX_WIFSIGNALED(status));
+    lkd_proc_info pi;
+    LT_EQ(lkd_proc_lookup(g, &pi), 0);
+    LT_EQ(pi.ppid, me);
+    put32(go[1], 1);
+    int32_t pp = get32(up[0]), got = get32(up[0]), code = get32(up[0]), from = get32(up[0]);
+    LT_EQ(pp, me);
+    LT_EQ(got, LX_SIGTERM);
+    LT_EQ(code, LX_SI_USER);
+    LT_EQ(from, (int32_t)mid);
+    LT_EQ(SC4(wait4, g, P(&status), 0, 0), g);
+    LT_EQ(status, 3 << 8);
+    close(up[0]); close(up[1]); close(mid_pipe[0]); close(mid_pipe[1]); close(go[0]); close(go[1]);
 }
 
 /* setpgid(2) by the parent on its child, setsid(2) in a child that is not a group leader. */
@@ -683,6 +922,10 @@ int main(void)
     LT_RUN(host_killed_child_is_reported);
     LT_RUN(clone_child_needs_wclone);
     LT_RUN(orphan_reparented_to_subreaper);
+    LT_RUN(double_fork_orphan_goes_to_family_init);
+    LT_RUN(pdeath_signal_when_the_parent_dies);
+    LT_RUN(orphan_exit_signal_becomes_sigchld);
+    LT_RUN(orphans_of_a_killed_host_process);
     LT_RUN(child_process_groups);
     LT_RUN(stop_and_continue_reports);
     LT_RUN(wait4_wakes_at_once_across_host_processes);
