@@ -350,3 +350,27 @@ MESURE :
 - ELDEN RING lancé depuis Obelisk, moteur de `4ad078c` posé à la main (avec le correctif SMC de `3932460`) : `301` en 2,74 s (au lieu de 241,5 s au rapport 10), plus d'erreur SCM. Aucune question Cloud, sauvegarde et binaires du jeu inchangés.
 
 Le jeu ne va pas plus loin, et ce n'est plus ce défaut. Le processus Wine d'`eldenring.exe` disparaît moins d'une seconde après le 301, sans message (sa sortie d'erreur est le `/dev/null` de `set_stdio_fd`), sans fenêtre ni device D3D12. MESURE, trace LKD d'un essai privé derrière `steam.exe` : après l'exec, le processus parle à wineserver, crée cinq fils ; l'un lance un programme avec sa sortie dans un tube (`clone3` puis `execve`, comme `popen`), qui finit en 127 (INFÉRÉ : `sh -c` d'une commande introuvable) ; puis les cinq fils sortent ensemble de leurs attentes par EINTR et le processus disparaît sans `exit_group` : un signal fatal. fexdarwin ne rapporte aucune faute. Le lancement direct du rapport 09 (`er-ge2-mtrack`, entrées-sorties du lanceur, donc sans ce défaut) finissait déjà de la même façon : toute la session s'arrêtait 2 s après le 301, sans sortie normale du jeu. INFÉRÉ : c'est le prochain verrou, indépendant de SCM_RIGHTS. Le nom de la commande et le signal ne sont pas identifiés. Le plantage `0xdeadba`, `SteamAPI_Init` et les fps ne sont pas atteints. Rapport : `sailover/build/experiments/eldenring-linux-20261010/reports/12-lkd-scm-devices.md`.
+
+## ELDEN RING après son 301 : un dlopen de CrossOver avant que GS désigne le TEB (2026-10-10, 13:55)
+
+Contexte : l'entrée précédente laissait le processus d'`eldenring.exe` mourir moins d'une seconde après le 301 d'EAC, par un signal fatal inconnu. LKD n'avait aucun moyen de dire quel signal tue un processus.
+
+Correctif LKD, diagnostic seulement : avec `LKD_TRACE`, le signal qui met fin à un processus donne une ligne `lkd: pid N dies of signal S in tid T: ...`, avec l'émetteur (si_code <= 0) ou l'adresse fautive et le rip. Elle part de `complete_signal` et de `lkd_signal_next`. Sans `LKD_TRACE`, rien ne change. Cas `fatal_signal_trace` dans `test_sig_basic`.
+
+MESURE, essais privés derrière `steam.exe` (runtime -13-dev2 copié, moteur `f587e5a3` puis moteur de ce commit, préfixe privé, sans hôte Steam) :
+- La mort : `lkd: pid 77 dies of signal 11 in tid 77: fault at 0x30 (si_code 1), rip 0x7f827548df5c`. Ni kill ni tgkill : une faute du fil principal, avant que Wine installe ses gestionnaires (`signal_init_process`), donc action par défaut.
+- Le rip est dans le second ELF d'EAC, injecté dans le jeu (memfd, chargé RWX) : `module+0x48df5c`, `movq %gs:0x30, %rax`. EAC lit le TEB par GS pour parcourir la liste des modules Windows du PEB.
+- Le dernier appel du fil avant la faute : `openat("/opt/wine/lib/wine/x86_64-unix/cxcompatdb.so") = ENOENT`. Dans voile-wine, `start_main_thread` fait `dlopen` de cette bibliothèque de CrossOver (CW Hack 24067), juste avant `server_init_process_done`. Sur Linux, Wine ne pose la base GS sur le TEB qu'ensuite (`init_syscall_frame`, `arch_prctl(ARCH_SET_GS)`). GS vaut 0, la lecture tombe sur 0x30. Voile ne livre aucun `cxcompatdb.so`.
+- A/B : `ntdll.so` du runtime avec l'appel à `dlopen` remplacé par `xor eax,eax` : plus de faute, le jeu continue jusqu'à steamclient. Un `cxcompatdb.so` vide à sa place (dlopen réussi) : même faute à 0x30. EAC réagit donc à tout `dlopen` de ce fil. Proton et Wine amont ne font aucun `dlopen` à cet endroit.
+- Le programme lancé comme `popen` est `sh -c -- "lshw -C display 2>/dev/null"` : `lshw` manque, `sh` rend 127, EAC lit une sortie vide et continue. Le fichier de 255 octets est `/proc/cpuinfo`. Les cinq fils (tids 78 à 82) sont créés pendant le `dlopen` injecté du module d'EAC, avant la suite de l'initialisation de Wine. Rien de cela ne tue le jeu.
+
+Correctif, hors de ce dépôt : voile-wine `1aeb924` retire ce `dlopen`, Voile `787c237` prend ce commit. `ntdll.so` reconstruit avec la recette de Voile (la même recette rend l'`ntdll.so` installé à l'octet près), puis passé dans le runtime privé :
+- ELDEN RING : 301, puis le jeu charge steamclient, échoue faute d'hôte Steam (`Failed to connect to Steam`, attendu hors de l'app) et sort. À sa sortie, un fil d'EAC (tid 78) saute dans `main_arena` de la glibc (motif fd/bk d'un bloc libéré), puis le gestionnaire SIGSEGV de Wine faute à son tour sur ce fil sans TEB. INFÉRÉ : usage après libération côté EAC pendant la sortie. Non traité.
+- Rocket League (`rl-direct.sh` copié, sans Epic) : 301 en 0,38 et 0,39 s.
+
+Vus en passant, non corrigés :
+- EAC retire `LD_PRELOAD` de l'environnement du jeu : `steam-hostpid.so` n'est plus chargé dans `eldenring.exe`. steamclient.so y enverra donc le pid invité au moteur Steam d'Obelisk. À vérifier dans l'app, avec l'hôte Steam.
+- `semget` (IPC System V) rend ENOSYS : steamclient.so l'affiche en assertion (`threadtools.cpp (2526)`), puis veut écrire un minidump avec `clone(CLONE_FS | CLONE_FILES | CLONE_UNTRACED)` sans CLONE_VM, que LKD refuse (EINVAL).
+- La racine Debian n'a ni `/etc/os-release`, ni `/etc/machine-id`, ni `/etc/hostname`, qu'EAC lit.
+
+Suite : 43 programmes passent, `test_sig_futex` dépasse son délai au même cas qu'avant. Rapport : `sailover/build/experiments/eldenring-linux-20261010/reports/13-eldenring-apres-301.md`.
