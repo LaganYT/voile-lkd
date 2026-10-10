@@ -49,3 +49,10 @@ Run:   `FEXDARWIN_LKD=1 FEXDARWIN_ROOT=<rootfs> FEXDARWIN_ROOT_RO=1 FEXDARWIN_BI
   the fexdarwin-run of b148137: the thread that found no room dies with `FATAL unhandled fault ... 0x10005297` (also
   without the variable: the old window base left that little room). After: 280 threads; with the variable, 123
   threads, then EAGAIN, W31 PASS.
+- w32_bigshared: a 4 GiB MAP_SHARED mapping of a memfd in a process with thousands of mappings, as Neptune maps a
+  D3D12 game's committed UPLOAD buffer (ELDEN RING creates three of 4 GiB). Arguments: size in GiB (4), filler
+  mappings (4000: every other page of one region made read-only), limit in ms for the mmap (200). Checks that the new
+  object reads as zeros, that two views show the same bytes past 4 GiB, and that a view mapped after code ran from
+  another view of the same bytes starts write-protected (code rewritten through it runs from the RX view), also when
+  the code page sits 32 MiB into the object. With the fexdarwin-run of 7450c4e: mmap of 4 GiB 37.6 ms with 18
+  mappings, 13.6 s with 2,017, past 120 s with 8,017. After: 0.03, 0.07 and 0.26 ms, W32 PASS.
