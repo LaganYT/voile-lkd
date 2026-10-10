@@ -596,7 +596,11 @@ int lkd_procfs_render_wire(const struct lkd_procfs_wire *w, char **text, size_t 
     int rc = pf_target_get(w->pid, w->tid, w->per_thread, &tg);
     if (rc < 0) return rc;
     struct pbuf b = { 0 };
-    if (tg.zombie) rc = pf_render_zombie(w, &tg.pi, &b);
+    /* lkd_host_pid: from the registry, whichever host process carries the target; a zombie has none left */
+    if (w->kind == PK_HOSTPID) {
+        if (tg.zombie || tg.pi.host_pid <= 0) rc = -LX_ESRCH;
+        else pb_printf(&b, "%d\n", tg.pi.host_pid);
+    } else if (tg.zombie) rc = pf_render_zombie(w, &tg.pi, &b);
     else if (tg.tk) rc = pf_render_local(w, tg.tk, &b);
     else if (tg.pi.host_pid > 0) {
         pf_target_put(&tg);

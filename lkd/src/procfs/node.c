@@ -73,6 +73,10 @@ static const struct pid_ent g_pid_ents[] = {
     { "root", PK_ROOTLNK, 'l', 0777 }, { "exe", PK_EXE, 'l', 0777 }, { "mounts", PK_MOUNTS, 'f', 0444 },
     { "mountinfo", PK_MOUNTINFO, 'f', 0444 }, { "smaps", PK_SMAPS, 'f', 0444 }, { "wchan", PK_WCHAN, 'f', 0444 },
     { "cgroup", PK_CGROUP, 'f', 0444 },
+    /* LKD's own: the macOS pid of the host process that carries the process (or the thread), for guest code that
+     * hands its pid to a macOS program (Steam's IPC). Reachable by name, never listed: a listing of /proc/<pid>
+     * stays the one of the modeled kernel. */
+    { "lkd_host_pid", PK_HOSTPID, 'f', 0444 },
     { NULL, 0, 0, 0 }
 };
 
@@ -387,6 +391,7 @@ static int list_entry(lkd_task *t, const struct pf_node *dir, uint64_t i, char n
         uint64_t k = 0;
         for (const struct pid_ent *e = g_pid_ents; e->name; e++) {
             if (e->kind == PK_TASKDIR && dir->kind == PK_TID) continue;
+            if (e->kind == PK_HOSTPID) continue;
             if (k++ == i) return emit(e->name, dt_of(e->type), name, dt);
         }
         return 0;

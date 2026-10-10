@@ -448,6 +448,98 @@ LT_TEST(real_other_process)
     close(up[0]); close(up[1]); close(go[0]); close(go[1]);
 }
 
+/* /proc/<pid>/lkd_host_pid, LKD's own file (no Linux model): the macOS pid of the host process that carries the
+ * process, as "%d\n". Read from the registry, for any process of the family, without asking the other process.
+ * Reachable by name, absent from the listing. A zombie has no host process left: -ESRCH. Threads share the pid of
+ * their process; a forked child has its own host process. */
+LT_TEST(host_pid_file)
+{
+    char path[96], want[32];
+    int64_t len;
+    static char names[64][32];
+    /* registry of the fake backend: the host pid of 7001 (91001), with no request to that process */
+    install_fake();
+    char *s = slurp("/proc/7001/lkd_host_pid", &len);
+    LT_STREQ(s, "91001\n");
+    free(s);
+    LT_EQ(g_remote_calls, 0);
+    s = slurp("/proc/7001/task/7005/lkd_host_pid", &len);
+    LT_STREQ(s, "91001\n");
+    free(s);
+    s = slurp("/proc/7002/lkd_host_pid", &len);   /* zombie */
+    LT_ERRNO(len, LX_ESRCH);
+    lkd_procfs_set_backend(NULL);
+
+    /* the caller itself: this test program is the host process */
+    snprintf(want, sizeof want, "%d\n", (int)getpid());
+    s = slurp("/proc/self/lkd_host_pid", &len);
+    LT_STREQ(s, want);
+    free(s);
+    struct lx_stat st;
+    LT_EQ(gstat("/proc/self/lkd_host_pid", &st), 0);
+    LT_EQ(st.st_mode, LX_S_IFREG | 0444);
+    LT_ERRNO(gopen("/proc/self/lkd_host_pid", LX_O_WRONLY), LX_EACCES);
+    int64_t n = names_of("/proc/self", names, 64);
+    LT_CHECK(n > 10);
+    for (int i = 0; i < n && i < 64; i++) LT_CHECK(strcmp(names[i], "lkd_host_pid") != 0);
+
+    /* a forked child: its own host process, seen the same way by itself and by its parent */
+    int up[2], go[2];
+    LT_EQ(pipe(up), 0);
+    LT_EQ(pipe(go), 0);
+    int32_t parent = T->proc->pid;
+    int64_t parent_host = getpid();
+    fflush(NULL);
+    int64_t pid = SC(T, fork, 0);
+    if (pid == 0) {
+        alarm(20);
+        char cw[32], cp[96];
+        int64_t l;
+        snprintf(cw, sizeof cw, "%d\n", (int)getpid());
+        char *own = slurp("/proc/self/lkd_host_pid", &l);
+        snprintf(cp, sizeof cp, "/proc/%d/lkd_host_pid", parent);
+        char *par = slurp(cp, &l);
+        put64(up[1], getpid());
+        put64(up[1], own && !strcmp(own, cw));
+        put64(up[1], par ? strtoll(par, NULL, 10) : -1);
+        free(own); free(par);
+        get64(go[0]);
+        child_exit_group(0);
+    }
+    LT_CHECK(pid > 0);
+    int64_t child_host = get64(up[0]);
+    LT_EQ(get64(up[0]), 1);                       /* the child read its own host pid */
+    LT_EQ(get64(up[0]), parent_host);             /* and its parent's */
+    LT_CHECK(child_host != parent_host);
+    snprintf(path, sizeof path, "/proc/%d/lkd_host_pid", (int)pid);
+    s = slurp(path, &len);
+    snprintf(want, sizeof want, "%d\n", (int)child_host);
+    LT_STREQ(s, want);
+    free(s);
+    put64(go[1], 1);
+    int status = 0;
+    LT_EQ(SC(T, wait4, (uint64_t)pid, P(SB + 72000), 0, 0), pid);
+    memcpy(&status, SB + 72000, 4);
+    LT_EQ(status, 0);
+    LT_ERRNO(gopen(path, LX_O_RDONLY), LX_ENOENT);
+    close(up[0]); close(up[1]); close(go[0]); close(go[1]);
+
+    /* a thread: the pid of its process, through thread-self and task/<tid> */
+    lkd_task *th = fake_make_thread(T);
+    snprintf(want, sizeof want, "%d\n", (int)getpid());
+    s = slurp_as(th, "/proc/thread-self/lkd_host_pid", &len);
+    LT_STREQ(s, want);
+    free(s);
+    snprintf(path, sizeof path, "/proc/self/task/%d/lkd_host_pid", th->tid);
+    s = slurp(path, &len);
+    LT_STREQ(s, want);
+    free(s);
+    snprintf(path, sizeof path, "/proc/self/task/%d", th->tid);
+    n = names_of(path, names, 64);
+    LT_CHECK(n > 10);
+    for (int i = 0; i < n && i < 64; i++) LT_CHECK(strcmp(names[i], "lkd_host_pid") != 0);
+}
+
 int main(void)
 {
     procfs_fixture();
@@ -455,5 +547,6 @@ int main(void)
     LT_RUN(fake_access_decisions);
     LT_RUN(fake_zombie_and_fd_list);
     LT_RUN(real_other_process);
+    LT_RUN(host_pid_file);
     return lt_finish();
 }

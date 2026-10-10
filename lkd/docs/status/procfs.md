@@ -59,6 +59,15 @@ Dans la construction complète (`cmake --build -- -k 0` puis `tools/run_tests.sh
 
 FEX est un émulateur et cela se voit : le nom de modèle est celui que le moteur donne, et `hypervisor` apparaît si le CPUID le fixe.
 
+## `/proc/<pid>/lkd_host_pid` (2026-10-10)
+
+Fichier propre à LKD, absent de Linux : le PID macOS du processus hôte qui porte le processus, suivi d'un saut de ligne (`72451\n`), mode 0444. Le même fichier existe sous `task/<tid>/` et donc sous `/proc/thread-self/` : tous les threads d'un processus partagent son processus hôte.
+- Source : `lkd_proc_info.host_pid` du registre de la famille, sans requête famsvc. Juste après un fork, après un exec (même processus hôte) et après la migration d'un enfant de vfork à son exec (nouveau processus hôte), le registre a déjà la bonne valeur.
+- Un zombie n'a plus de processus hôte : `-ESRCH`.
+- Le fichier n'apparaît pas dans le listage de `/proc/<pid>` : il s'ouvre par son nom seulement, pour que le listage reste celui du noyau modélisé (EAC lit ces répertoires).
+- Usage : `guest/steam-hostpid.so` (racine du dépôt). Le `steamclient.so` de Valve annonce `getpid()` au moteur Steam macOS d'Obelisk, qui coupe le tuyau si ce PID n'est pas un processus macOS vivant.
+- Tests : `test_procfs_other` cas `host_pid_file` (registre factice, soi, fork réel vu des deux côtés, zombie, thread, absence du listage) ; témoin invité `tests/glibc-x86_64/hostpid.sh` (w25).
+
 ## Fichiers volontairement absents (ENOENT)
 
 `/sys/devices/virtual/dmi/id/*`, `/sys/class`, `/sys/bus/pci`, `/proc/bus/pci/devices` (sondes EAC, absence acceptée), `/proc/<pid>/io` (pas de comptage d'E/S par tâche), `map_files`, `ns`, `sched`, `stack`, `pagemap`, `oom_*`, `attr`, `loginuid`, `uid_map`, `/proc/sys/kernel/yama`, `/proc/net/tcp` et voisins, `/proc/stat` lignes `intr`, `ctxt`, `softirq`, `processes`. `/proc/<pid>/net/dev` ne porte que l'en-tête (aucune interface traduite). Si `inotify_init1` n'a pas de propriétaire, `/proc/sys/fs/inotify` n'existe pas.

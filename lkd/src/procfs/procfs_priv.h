@@ -60,6 +60,7 @@ enum pf_kind {
     PK_ENVIRON, PK_AUXV, PK_STATUS, PK_PERSONALITY, PK_LIMITS, PK_COMM, PK_SYSCALL, PK_CMDLINE,
     PK_STAT, PK_STATM, PK_MAPS, PK_MEM, PK_CWD, PK_ROOTLNK, PK_EXE, PK_MOUNTS, PK_MOUNTINFO, PK_SMAPS,
     PK_WCHAN, PK_CGROUP,
+    PK_HOSTPID,             /* LKD's own lkd_host_pid, not a Linux file */
     /* /sys dynamic */
     PK_CPUN, PK_TOPODIR, PK_TOPO, PK_CACHEDIR, PK_CACHEIDX, PK_CACHEF,
     /* /dev */
