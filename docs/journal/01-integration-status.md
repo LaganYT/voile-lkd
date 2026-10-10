@@ -452,3 +452,21 @@ Correctif : `ForkChild` repose l'état du fil, exécution hors d'une écriture, 
 Témoin `w33_forkwx` (README des témoins glibc). Un appelant de 60 000 appels directs vers 256 feuilles est traduit une fois. À chaque tour, les feuilles sont remappées, l'appelant tourne (tous les sites sont liés), les feuilles sont démappées (le moteur défait les 60 000 liens d'un coup), puis fork. 2 fils actifs par CPU chargent la machine. La rafale doit durer au moins un quantum d'ordonnancement : 0 mort sur 1 000 tours avec 20 000 sites, 14 sur 500 avec 60 000, 7 sur 200 avec 150 000. Moteur de 8ddfed2 : 15 enfants morts sur 600 tours, chacun avec la faute du répartiteur à l'offset 0x5f4. Moteur corrigé : 0 sur 600, deux fois. Les modes plus simples (fork après traduction, ou fork puis exec comme wineserver) ne reproduisaient pas : 0 sur 2 000 et 0 sur 600.
 
 Suites avec le moteur corrigé : LKD 43 programmes passent, `test_sig_futex` dépasse son délai au même cas qu'avant ; témoins w01 à w33 comme avant (w07 en délai après 99/99, w03 identique octet pour octet, w25 hostpid PASS, w31 aussi avec l'ancienne base) ; sondes EAC 38 échecs sur 4 376, les mêmes sondes et les mêmes premiers échecs ; Rocket League (`rl-direct.sh`, runtime privé) 301 douze fois sur douze, dont six sous charge (mapping EAC 0,60 à 0,70 s). Harnais D3D12 et D3D11 du rapport 18, deux passes : relectures justes, le trou connu de la résolution de renderpass, la mort du worker signalée sans blocage. Le moteur de diagnostic avait déjà donné 301 à 12 lancements, 264 forks, aucun état périmé : la faute dépend de la charge de la machine. Rapport : `sailover/build/experiments/eldenring-linux-20261010/reports/19-sigbus-fork.md`.
+
+## ELDEN RING : le chargement de 5 minutes venait du cache de shaders Metal, vidé par DXMT (2026-10-10, 22:20)
+
+Contexte. Entre la première image et l'écran titre, ELDEN RING prenait 48 s, 88 s, 3 min 43 s ou plus de 300 s, avec le même moteur. Au rapport 16, le fil « CR2.Device(HDD) » brûlait un cœur pendant une minute.
+
+MESURE (9 lancements depuis Obelisk, profil, vidages et relevés toutes les 5 s) :
+- un lancement lent (275 à 298 s) a `MTLCompilerService` à 90-98 % d'un cœur dans chaque relevé, de la première image au titre. CR2 y brûle 147 à 183 s de CPU sans appel système : il attend en boucle active ;
+- un lancement chaud (7 à 48 s) n'a aucune compilation Metal, et CR2 n'y prend que 3 à 10 s.
+
+La cause : les deux serveurs de rendu, l'arm64 de DXMT et l'Intel de D3DMetal sous Rosetta, tournaient hors de tout bundle. Metal rangeait leurs fonctions compilées dans un seul cache, `$DARWIN_USER_CACHE_DIR/com.apple.metal/16777235_355/`. Chaque démarrage du serveur de DXMT le vidait : après un ELDEN RING, `functions.data` fait 46,4 Mo et environ 7 500 entrées ; après un Rocket League, 320 Ko ; après le harnais D3D11 sur DXMT, 128 Ko. Deux Rocket League puis ELDEN RING : 296 s jusqu'au titre.
+
+Correctif dans le lanceur d'Obelisk (sailover `787942a`, local, non poussé) : chaque serveur tourne depuis un bundle d'aide dans celui du jeu, `<jeu>.app/Contents/Helpers/<backend>.app`, avec son propre identifiant, donc son propre cache Metal. Deux faits macOS mesurés en route :
+- pendant un instant après le démarrage d'un exécutable d'un bundle, macOS refuse toute nouvelle écriture dans ce bundle (EPERM, aussi hors bac à sable ; 0,3 s plus tard, elles passent). Le bundle d'aide est donc prêt avant wsd ;
+- Rosetta traduit chaque nouveau fichier à son premier lancement : 0,34 à 0,55 s pour une copie neuve du serveur Intel, 9 ms ensuite. La copie est donc gardée d'un lancement à l'autre et traduite avant le jeu, hors de la fenêtre d'EAC.
+
+MESURE après : le cache d'ELDEN RING (46,5 Mo) ne bouge pas pendant deux Rocket League, et ELDEN RING arrive au titre 7 s après sa première image. EAC 301 à chaque lancement (mapping 1,38 à 1,43 s).
+
+Reste, avec un cache chaud : le titre arrive 7-8 s ou 43-48 s après la première image. Dans les lents, le fil principal tourne en NtYieldExecution dans un module de plus de 11 Mo, sans doute `eossdk-win64-shipping.dll`. Hors de notre pile. Le cache propre de D3DMetal (`d3dm/virgl_render_server`) n'est plus écrit depuis 17:20, peut-être parce que le serveur se termine par SIGTERM. Rapport : `sailover/build/experiments/eldenring-linux-20261010/reports/19-sigbus-fork.md`.
