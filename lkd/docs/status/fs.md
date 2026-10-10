@@ -56,6 +56,7 @@ Couverture : racine invitée temporaire avec liens relatifs et absolus, ".." apr
 15. fsync ne force pas l'écriture du cache du disque (pas de F_FULLFSYNC) ; fallocate réserve au mieux (F_PREALLOCATE), APFS peut encore rendre ENOSPC plus tard ; PUNCH_HOLE écrit des zéros quand F_PUNCHHOLE refuse la plage.
 16. Ré-exécution hôte (execve) : la table de descripteurs invités n'est pas encore exportée (voir `docs/requests/fs-task.md` §4).
 17. Positions de répertoire et état des objets sans fd hôte : propres au processus, non partagés après fork (règle de `fd.h`).
+18. SCM_RIGHTS (2026-10-10) : un répertoire synthétique ou virtuel et un descripteur O_PATH partent en enregistrement (`LKD_FDREC_FS`, chemin invité global et drapeaux) et le récepteur rouvre ce chemin (`fs_rec_import`, `sys_open.c`). C'est une nouvelle description, avec sa propre position. Un descripteur hôte de caractère sans chemin invité qui est le jumeau d'un périphérique émulé devient ce périphérique (`fs_wrap_host_fd` appelle `lkd_procfs_dev_adopt`). Voir `net.md`.
 
 ## Demandes écrites
 

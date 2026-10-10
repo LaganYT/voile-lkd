@@ -35,6 +35,8 @@ static const lkd_vmount_ops g_ops[3] = {
 void lkd_procfs_init(void)
 {
     pf_remote_init();
+    pf_dev_register();
+    pf_file_register();
     static const char *const at[3] = { "/proc", "/sys", "/dev" };
     for (int i = 0; i < 3; i++) {
         int rc = lkd_vfs_mount_virtual(at[i], &g_ops[i], (void *)(intptr_t)i);

@@ -65,7 +65,7 @@ Reproduction : liblkd.a construite dans un répertoire de travail, hôte `fexdar
 3. wait4 ne voit pas encore les arrêts et reprises de contrôle de travaux d'un enfant (demande sig-2.md, point 1) ; le SIGCHLD et le réveil des attentes sont envoyés.
 4. Groupe de processus orphelin non détecté : SIGTSTP, SIGTTIN, SIGTTOU arrêtent toujours.
 5. `si_utime`/`si_stime` de SIGCHLD à 0. RLIMIT_SIGPENDING compté par processus (Linux : par utilisateur), plafonné à 16384.
-6. signalfd : `fstat` non fourni (NULL, l'erreur par défaut du module fs) ; état non partagé à travers un fork (fd.h).
+6. signalfd : `fstat` non fourni (NULL, l'erreur par défaut du module fs) ; état non partagé à travers un fork (fd.h). Par SCM_RIGHTS (2026-10-10), il part en enregistrement avec son masque (`LKD_FDREC_SIGNALFD`) : le récepteur en a un dans son propre processus et lit ses propres signaux, comme Linux ; un masque changé ensuite par `signalfd(fd, ...)` n'est pas vu de l'autre côté.
 7. Les entrées de la table futex partagée d'un processus mort brutalement restent (réveils comptés à tort) ; les directoires de famille d'exécutions plantées sont nettoyés après une minute.
 8. Interruption du code JIT : seulement au prochain syscall tant que le moteur n'a pas de page d'interruption (limite moteur, sig-3.md).
 9. Les délais REALTIME absolus sont convertis une fois : un changement d'heure ultérieur ne les déplace pas.

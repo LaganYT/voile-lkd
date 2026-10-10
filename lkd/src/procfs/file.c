@@ -149,10 +149,69 @@ static void gf_release(lkd_fdobj *o)
     o->priv = NULL;
 }
 
+/* SCM_RIGHTS: a record with the guest path and the position (LKD_FDREC_PROCFS, pf_rec_export). */
+static int gf_export(lkd_fdobj *o, int *hfds, int cap)
+{
+    (void)cap;
+    struct pf_file *f = o->priv;
+    pthread_mutex_lock(&o->lock);
+    int64_t pos = f->pos;
+    pthread_mutex_unlock(&o->lock);
+    return pf_rec_export(o, pos, hfds);
+}
+
 static const lkd_fd_ops g_gen_ops = {
     .name = "procfs", .read = gf_read, .write = gf_write, .lseek = gf_lseek, .fstat = gf_fstat,
-    .release = gf_release,
+    .release = gf_release, .export_fds = gf_export,
 };
+
+/* Records of procfs objects: the canonical guest path (/proc/<pid>/status, never /proc/self) and the position.
+ * The receiver opens the path again with its own rights (pf_open), as a request, then moves to the position:
+ * the content is produced again at its first read, seq_file style. */
+struct pf_rec { int64_t pos; char gpath[]; };
+
+int pf_rec_export(lkd_fdobj *o, int64_t pos, int *hfd)
+{
+    if (!o->gpath) return -LX_EOPNOTSUPP;
+    size_t gl = strlen(o->gpath) + 1;
+    size_t len = sizeof(struct pf_rec) + gl;
+    if (len > LKD_FDREC_MAX_DATA) return -LX_ENAMETOOLONG;
+    struct pf_rec *r = malloc(len);
+    if (!r) return -LX_ENOMEM;
+    r->pos = pos;
+    memcpy(r->gpath, o->gpath, gl);
+    int rc = lkd_fdrec_export(LKD_FDREC_PROCFS, atomic_load(&o->status_flags), r, len, hfd);
+    free(r);
+    return rc;
+}
+
+static int pf_rec_import(lkd_task *t, uint32_t fl, const void *data, size_t len, lkd_fdobj **out)
+{
+    if (len <= sizeof(struct pf_rec)) return -LX_EINVAL;
+    const struct pf_rec *r = data;
+    const char *gp = r->gpath;
+    size_t gl = len - sizeof *r;
+    if (memchr(gp, 0, gl) != gp + gl - 1 || r->pos < 0) return -LX_EINVAL;
+    for (int mnt = PF_PROC; mnt <= PF_DEV; mnt++) {
+        const char *mp = pf_mount_point(mnt);
+        size_t ml = strlen(mp);
+        if (strncmp(gp, mp, ml) != 0 || (gp[ml] && gp[ml] != '/')) continue;
+        const char *rel = gp + ml;
+        while (*rel == '/') rel++;
+        lkd_fdobj *o;
+        int rc = pf_open(t, mnt, rel, fl & ~(uint32_t)(LX_O_CREAT | LX_O_EXCL | LX_O_TRUNC), 0, &o);
+        if (rc < 0) return rc;
+        if (r->pos && o->ops && o->ops->lseek) {
+            int64_t p = o->ops->lseek(t, o, r->pos, LX_SEEK_SET);
+            if (p < 0) { lkd_fdobj_put(o); return (int)p; }
+        }
+        *out = o;
+        return 0;
+    }
+    return -LX_EINVAL;
+}
+
+void pf_file_register(void) { lkd_fdrec_register(LKD_FDREC_PROCFS, pf_rec_import); }
 
 static char *make_gpath(int mnt, const char *rel)
 {

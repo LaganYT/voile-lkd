@@ -81,6 +81,8 @@ Fichier propre à LKD, absent de Linux : le PID macOS du processus hôte qui por
 
 ## Pseudo-terminaux
 
+SCM_RIGHTS (2026-10-10). null, zero, random et urandom partent vers un autre processus hôte par leur jumeau macOS (même comportement), ouvert au premier envoi avec le mode d'accès invité, et un jumeau reçu sans chemin invité redevient le périphérique Linux (`lkd_procfs_dev_adopt`, aussi pour l'entrée standard du runtime). Lectures et écritures restent dans LKD : macOS refuse `write` sur `/dev/urandom` (EPERM) et ne sait pas attendre un périphérique (`poll` POLLNVAL, `kevent` EINVAL). `/dev/full`, qui n'a pas de jumeau, et un périphérique ouvert O_PATH partent en enregistrement (`LKD_FDREC_DEV`). Un fichier généré et `/proc/<pid>/mem` partent en enregistrement `LKD_FDREC_PROCFS` (chemin canonique, position) : le récepteur le rouvre avec ses propres droits (`pf_open`) et reprend à la position. Voir `net.md`.
+
 Non pris en charge. `/dev/ptmx` existe avec les numéros Linux (5:2, 0666) mais `open` répond `-ENODEV` (noyau sans pilote devpts) ; `/dev/pts` est un répertoire vide. `/dev/tty` et `/dev/console` ouvrent le terminal de contrôle de l'hôte (`/dev/tty`) et répondent `-ENXIO` sans terminal ; `/dev/console` n'est donc pas la console système.
 
 ## Lacunes connues (honnêtes)

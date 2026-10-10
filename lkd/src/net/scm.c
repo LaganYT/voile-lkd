@@ -2,16 +2,20 @@
  * a new descriptor on the same open file description).
  *
  * Sending: an object is carried by its host descriptor (files, directories, pipes, sockets, memfd, host
- * shm). An eventfd is carried by three host descriptors (its shared counter region and both ends of
- * its readiness pipe). kqueue-backed objects (epoll, timerfd, inotify) cannot cross processes (MESURE:
- * sendmsg of a kqueue descriptor gives EINVAL) and objects without a host descriptor (signalfd, virtual
- * files) have nothing to carry: sendmsg answers -EOPNOTSUPP for them, visibly.
+ * shm), or by what its ops->export_fds gives (fd.h): emulated devices send a host twin with the same
+ * behaviour (/dev/null, /dev/zero, /dev/random, /dev/urandom), objects without any host form send a record
+ * (synthetic and virtual directories, O_PATH descriptors, generated /proc files, /dev/full, signalfd). An
+ * eventfd is carried by three host descriptors (its shared counter region and both ends of its readiness
+ * pipe), an ntsync object by its anchor. kqueue-backed objects (epoll, timerfd, inotify) cannot cross
+ * processes (MESURE: sendmsg of a kqueue descriptor gives EINVAL; their state is a kqueue and a table of
+ * this process): sendmsg answers -EOPNOTSUPP for them, visibly.
  *
  * Receiving: each host descriptor is rebuilt from what fstat says. A socket becomes a socket object
- * (domain from getsockname, type from SO_TYPE); a POSIX shm object (no file type bits, MESURE) becomes a
- * mappable shared-memory file object, or an eventfd when it carries the eventfd magic; anything else
- * goes to the fs module (regular file, directory, FIFO, character device). The host O_NONBLOCK of a
- * received description is shared with the sender and left untouched.
+ * (domain from getsockname, type from SO_TYPE); a POSIX shm object (no file type bits, MESURE) becomes an
+ * eventfd when it carries the eventfd magic, the object a record describes, or else a mappable
+ * shared-memory file object; anything else goes to the fs module (regular file, directory, FIFO, character
+ * device: a host twin becomes the emulated device again). The host O_NONBLOCK of a received description is
+ * shared with the sender and left untouched.
  */
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -96,6 +100,10 @@ int net_scm_export(lkd_fdobj *o, int *hfds, int cap)
         if (cap < 3) return -LX_ETOOMANYREFS;
         return net_eventfd_export(o, hfds);
     }
+    if (o->ops && o->ops->export_fds) {
+        if (cap < 1) return -LX_ETOOMANYREFS;
+        return o->ops->export_fds(o, hfds, cap);
+    }
     if (o->ops == &net_epoll_ops || o->ops == &net_timerfd_ops || o->ops == &net_inotify_ops || o->host_fd < 0) {
         lkd_log_once("net: SCM_RIGHTS of a %s object cannot cross host processes (-EOPNOTSUPP)", o->ops ? o->ops->name : "?");
         return -LX_EOPNOTSUPP;
@@ -137,7 +145,7 @@ static int import_socket(int fd, lkd_fdobj **out)
     return e;
 }
 
-int net_scm_import(const int *hfds, int n, lkd_fdobj **objs, int cap)
+int net_scm_import(lkd_task *t, const int *hfds, int n, lkd_fdobj **objs, int cap)
 {
     int k = 0;
     for (int i = 0; i < n; i++) {
@@ -159,6 +167,12 @@ int net_scm_import(const int *hfds, int n, lkd_fdobj **objs, int cap)
                     e = net_eventfd_from_host(fd, hfds[i + 1], hfds[i + 2], &o);
                     if (e == 0) { i += 2; objs[k++] = o; continue; }
                 }
+            }
+            int rec = lkd_fdrec_import(t, fd, &o);
+            if (rec != 0) {
+                close(fd);                          /* the record was read; the rebuilt object does not need it */
+                if (rec > 0) objs[k++] = o;
+                continue;
             }
             e = wrap_shm(fd, &o);
         } else {

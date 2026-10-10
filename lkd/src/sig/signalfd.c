@@ -166,6 +166,17 @@ static void sfd_release(lkd_fdobj *o)
     o->priv = NULL;
 }
 
+/* SCM_RIGHTS: a record with the mask. A signalfd reads the signals of the process that reads it
+ * (fs/signalfd.c signalfd_dequeue works on current), so the receiver gets one with the same mask in its own
+ * process. A mask changed later by signalfd(fd, ...) in one process is not seen by the other (fd.h). */
+static int sfd_export(lkd_fdobj *o, int *hfds, int cap)
+{
+    (void)cap;
+    struct sfd *s = o->priv;
+    uint64_t mask = atomic_load(&s->mask);
+    return lkd_fdrec_export(LKD_FDREC_SIGNALFD, atomic_load(&o->status_flags), &mask, sizeof mask, &hfds[0]);
+}
+
 static const lkd_fd_ops sfd_ops = {
     .name = "signalfd",
     .read = sfd_read,
@@ -173,7 +184,43 @@ static const lkd_fd_ops sfd_ops = {
     .describe = sfd_describe,
     .fdinfo = sfd_fdinfo,
     .release = sfd_release,
+    .export_fds = sfd_export,
 };
+
+/* A signalfd of t's process with this mask (already without SIGKILL and SIGSTOP) and status flags. */
+static int sfd_create(lkd_task *t, uint64_t mask, uint32_t status_flags, lkd_fdobj **out)
+{
+    struct lkd_sigproc *sp = sig_proc(t->proc);
+    struct sfd *s = calloc(1, sizeof *s);
+    if (!s) return -LX_ENOMEM;
+    int rd, wr;
+    int e = lkd_net_make_notify_pipe(&rd, &wr);
+    if (e < 0) { free(s); return e; }
+    s->proc = t->proc;
+    s->sp = sp;
+    atomic_init(&s->mask, mask);
+    s->notify_rd = rd;
+    s->notify_wr = wr;
+    lkd_fdobj *o = lkd_fdobj_new(LKD_FD_SIGNALFD, &sfd_ops, -1, status_flags, s);
+    if (!o) { close(rd); close(wr); free(s); return -LX_ENOMEM; }
+    o->notify_fd = rd;
+    sig_lock(sp);
+    s->next = sp->sfds;
+    sp->sfds = s;
+    if ((atomic_load(&t->pending.bits) | atomic_load(&sp->shared_bits)) & mask) { char c = 1; (void)!write(wr, &c, 1); }
+    sig_unlock(sp);
+    *out = o;
+    return 0;
+}
+
+/* LKD_FDREC_SIGNALFD: the mask, in the receiving process. */
+static int sfd_rec_import(lkd_task *t, uint32_t fl, const void *data, size_t len, lkd_fdobj **out)
+{
+    uint64_t mask;
+    if (len != sizeof mask || !t || !t->proc) return -LX_EINVAL;
+    memcpy(&mask, data, sizeof mask);
+    return sfd_create(t, mask & ~LX_SIG_UNBLOCKABLE, LX_O_RDWR | (fl & LX_O_NONBLOCK), out);
+}
 
 static int64_t do_signalfd4(lkd_task *t, int fd, uint64_t umask, uint64_t sizemask, uint32_t flags)
 {
@@ -184,24 +231,9 @@ static int64_t do_signalfd4(lkd_task *t, int fd, uint64_t umask, uint64_t sizema
     mask &= ~LX_SIG_UNBLOCKABLE;
     struct lkd_sigproc *sp = sig_proc(t->proc);
     if (fd == -1) {
-        struct sfd *s = calloc(1, sizeof *s);
-        if (!s) return -LX_ENOMEM;
-        int rd, wr;
-        int e = lkd_net_make_notify_pipe(&rd, &wr);
-        if (e < 0) { free(s); return e; }
-        s->proc = t->proc;
-        s->sp = sp;
-        atomic_init(&s->mask, mask);
-        s->notify_rd = rd;
-        s->notify_wr = wr;
-        lkd_fdobj *o = lkd_fdobj_new(LKD_FD_SIGNALFD, &sfd_ops, -1, LX_O_RDWR | (flags & LX_SFD_NONBLOCK), s);
-        if (!o) { close(rd); close(wr); free(s); return -LX_ENOMEM; }
-        o->notify_fd = rd;
-        sig_lock(sp);
-        s->next = sp->sfds;
-        sp->sfds = s;
-        if ((atomic_load(&t->pending.bits) | atomic_load(&sp->shared_bits)) & mask) { char c = 1; (void)!write(wr, &c, 1); }
-        sig_unlock(sp);
+        lkd_fdobj *o;
+        int e = sfd_create(t, mask, LX_O_RDWR | (flags & LX_SFD_NONBLOCK), &o);
+        if (e < 0) return e;
         int nfd = lkd_fd_alloc(t, o, 0, (flags & LX_SFD_CLOEXEC) != 0);
         lkd_fdobj_put(o);
         return nfd;
@@ -231,4 +263,5 @@ void sig_sfd_register(void)
 {
     LKD_REGISTER(signalfd);
     LKD_REGISTER(signalfd4);
+    lkd_fdrec_register(LKD_FDREC_SIGNALFD, sfd_rec_import);
 }

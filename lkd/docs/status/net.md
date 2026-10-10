@@ -8,7 +8,7 @@ Date : 2026-10-02. Jalons atteints : sockets AF_UNIX et AF_INET/AF_INET6, SCM_RI
 - `sockmsg.c` : sendto, recvfrom, sendmsg, recvmsg, sendmmsg, recvmmsg ; MSG_PEEK, MSG_WAITALL, MSG_TRUNC, MSG_DONTWAIT, MSG_NOSIGNAL, MSG_CMSG_CLOEXEC, MSG_WAITFORONE ; SCM_RIGHTS dans les deux sens ; SCM_CREDENTIALS (voir plus bas).
 - `sockopt.c` : getsockopt, setsockopt (SOL_SOCKET, TCP, IP, IPV6) ; SO_RCVTIMEO/SNDTIMEO tenus dans l'objet, SO_RCVBUF/SNDBUF doublés, SO_LINGER (secondes), SO_PEERCRED, SO_PASSCRED, booléens relus 0 ou 1.
 - `unixaddr.c` : adresses Linux (u16 famille) et Darwin, chemins AF_UNIX par le vfs, espace abstrait par fichiers.
-- `scm.c` : objets à travers SCM_RIGHTS (fichier, tube, socket, objet shm hôte, eventfd en trois descripteurs).
+- `scm.c` : objets à travers SCM_RIGHTS (fichier, tube, socket, objet shm hôte, eventfd en trois descripteurs, objet ntsync par son ancre, et ce que rend `ops->export_fds` : jumeau hôte d'un périphérique émulé, enregistrement pour les objets sans forme hôte, voir « SCM_RIGHTS des objets sans descripteur hôte »).
 - `eventfd.c` : eventfd, eventfd2 (compteur en mémoire partagée MAP_SHARED, mises à jour sans verrou, tube de disponibilité).
 - `timerfd.c` : timerfd_create, timerfd_settime, timerfd_gettime (expirations calculées de l'horloge, kqueue EVFILT_TIMER comme source d'attente).
 - `epoll.c` : epoll_create, epoll_create1, epoll_ctl, epoll_wait, epoll_pwait, epoll_pwait2 ; epoll_ctl_old et epoll_wait_old rendent ENOSYS comme Linux.
@@ -26,6 +26,7 @@ Syscalls enregistrés (45) : socket socketpair bind listen accept accept4 connec
 | `test_net_epoll` | 352 | 15 | niveau, front, oneshot, retrait par fermeture, sockets, écoute, eventfd, attente bloquante et interrompue, epoll_pwait, imbrication et ELOOP, reconstruction après fork, 100 descripteurs |
 | `test_net_inet` | 147 | 10 | TCP et UDP sur boucle locale, connect non bloquant, refus, SO_ERROR, options TCP, IPv6 ::1, sendmmsg/recvmmsg, échange de type DNS, poll de TCP |
 | `test_net_events` | 199 | 16 | poll/ppoll/select/pselect6, eventfd (compteur, sémaphore, bloquant, partagé par fork), timerfd (une fois, périodique, absolu, epoll, fork), inotify |
+| `test_net_scm` | 38 | 5 | SCM_RIGHTS entre deux processus hôtes (fork) d'objets sans descripteur hôte : /dev/null, /dev/zero, /dev/urandom, /dev/random, /dev/full (aller et retour), /dev/null hôte comme entrée standard, répertoire synthétique, /dev, /proc/<pid>, O_PATH d'un fichier et d'un répertoire synthétique, /proc/<pid>/status avec sa position, signalfd. Les cinq cas échouent avant le changement (EOPNOTSUPP à l'envoi) (2026-10-10) |
 | `test_net_host` | 48 | 2 | un fil hôte natif joue wsd/vtest : connexion invité vers un chemin lié à un répertoire hôte, `getpeereid` voit l'uid du runtime, objet shm hôte reçu puis `mmap(MAP_SHARED)` par mm avec écritures cohérentes dans les deux sens, tube de fence reçu et attendu par poll et epoll, tube invité envoyé à l'hôte |
 | total | 979 | 58 | |
 
@@ -37,7 +38,8 @@ Syscalls enregistrés (45) : socket socketpair bind listen accept accept4 connec
 - Un connect TCP refusé : `SO_ERROR` vaut `ECONNREFUSED` et le socket est HUP|ERR ; un deuxième connect donne `EINVAL` sur l'hôte.
 - `connect(AF_UNSPEC)` sur UDP donne `EAFNOSUPPORT` mais dissout l'association ; sur TCP c'est refusé.
 - Un descripteur kqueue ne peut pas partir par SCM_RIGHTS (EINVAL) : epoll, timerfd et inotify rendent `EOPNOTSUPP` à l'envoi.
-- Un objet `shm_open` reçu n'a pas de bits de type de fichier dans `st_mode` : c'est ainsi que `scm.c` le reconnaît (et reconnaît l'eventfd par sa signature de 8 octets).
+- Un objet `shm_open` reçu n'a pas de bits de type de fichier dans `st_mode` : c'est ainsi que `scm.c` le reconnaît (et reconnaît l'eventfd et l'enregistrement par leur signature de 8 octets).
+- `/dev/null`, `/dev/zero`, `/dev/random`, `/dev/urandom` de l'hôte : `F_SETFL` O_NONBLOCK et O_APPEND acceptés et partagés par SCM_RIGHTS ; `poll` rend POLLNVAL, `kevent` EVFILT_READ et EVFILT_WRITE rendent EINVAL ; `write` sur `/dev/urandom` rend EPERM ; `mmap` rend ENODEV. Numéros : null 3,2, zero 3,3, random 17,0, urandom 17,1 sur ce Mac (relus à l'exécution). macOS n'a pas de `/dev/full`.
 - kqueue sur un kqueue : lisible quand un événement est prêt (sert de source d'attente pour timerfd, inotify et epoll imbriqué).
 - Un descripteur de socket reçu partage le drapeau O_NONBLOCK de l'émetteur : LKD passe alors `MSG_DONTWAIT` à chaque appel au lieu de changer la description partagée.
 
@@ -55,6 +57,28 @@ Syscalls enregistrés (45) : socket socketpair bind listen accept accept4 connec
 3. poll et epoll sur ces sockets et sur les tubes reçus : ATTEINT.
 4. Test MAP_SHARED cohérent des deux côtés : ATTEINT (écritures du processus hôte vues par l'invité, et l'inverse, deux projections du même objet qui s'alias).
 
+## SCM_RIGHTS des objets sans descripteur hôte (2026-10-10)
+
+Linux passe tout fichier ouvert par SCM_RIGHTS. Avant, LKD refusait (`EOPNOTSUPP`, « SCM_RIGHTS of a dev object cannot cross host processes ») tout objet sans descripteur hôte. Wine en mourait : un processus créé sans handles standard a `/dev/null` en 0 et 1 (`ntdll/unix/process.c` `set_stdio_fd`), et un processus Wine sans parent Wine envoie ses fd 0, 1 et 2 à wineserver (`env.c` `get_initial_console`). Même refus pour un répertoire synthétique (`/games`, rapport 06 de sailover).
+
+Mécanisme général (`fd.h`) : une opération facultative `export_fds` donne les descripteurs hôtes qui portent la description. Le récepteur reconstruit l'objet (`net_scm_import`).
+
+| Sorte | Avant | Maintenant |
+| --- | --- | --- |
+| fichier, répertoire hôte, tube, socket, memfd, shm hôte, tty | fd hôte | inchangé |
+| eventfd | 3 fd hôtes (région partagée, tube) | inchangé |
+| ntsync (périphérique et objets) | ancre (tube) | inchangé |
+| /dev/null, /dev/zero, /dev/random, /dev/urandom | refusé | jumeau hôte (`procfs/dev.c`) : le périphérique macOS de même comportement, ouvert avec le mode d'accès invité au premier envoi, ou celui qui est arrivé. Un processus LKD qui le reçoit retrouve le périphérique Linux (1:3, lectures et écritures de LKD) ; un processus hôte reçoit un périphérique qui marche |
+| /dev/full, un périphérique ouvert O_PATH | refusé | enregistrement `LKD_FDREC_DEV` |
+| répertoire synthétique, répertoire virtuel (/proc, /proc/<pid>, /dev, /sys...), O_PATH | refusé | enregistrement `LKD_FDREC_FS` : le chemin invité global et les drapeaux, rouverts par le récepteur |
+| fichier généré de /proc et /sys, /proc/<pid>/mem | refusé | enregistrement `LKD_FDREC_PROCFS` : chemin canonique et position |
+| signalfd | refusé | enregistrement `LKD_FDREC_SIGNALFD` : le masque ; le récepteur lit ses propres signaux, comme Linux (`signalfd_dequeue` sur `current`) |
+| epoll, timerfd, inotify | refusé | refusé (`EOPNOTSUPP`) : leur état est une kqueue et une table du processus, macOS ne passe pas une kqueue (EINVAL) |
+
+Un enregistrement (`src/core/fdrec.c`) est un objet shm POSIX de 16 Kio, supprimé dès sa création, qui commence par `LKDFREC1`, le type, les drapeaux d'état Linux et les données du module propriétaire. Il ne contient que des noms invités, jamais de chemin hôte ni de pointeur. Le récepteur le lit puis le ferme ; le module rouvre la chose avec les droits du récepteur. Un descripteur hôte de `/dev/null` (ou zero, random, urandom) qui arrive sans chemin invité, par SCM_RIGHTS ou comme entrée standard du runtime, devient le périphérique Linux (`lkd_procfs_dev_adopt`, appelé par `fs_wrap_host_fd`) : avant, l'invité voyait les numéros de macOS et `poll` rendait POLLNVAL.
+
+Écarts : le récepteur d'un enregistrement a une nouvelle description de la même chose. La position (répertoires, fichiers de /proc) et les drapeaux changés ensuite ne sont pas partagés, comme pour les objets sans fd hôte après un fork (`fd.h`). Le jumeau d'un périphérique ne partage pas non plus les drapeaux : chaque processus garde les siens, copiés à l'envoi. Un répertoire de /proc d'un processus mort entre l'envoi et la réception ne se rouvre pas (le descripteur est perdu, MSG_CTRUNC non posé), là où Linux garde un descripteur dont les recherches échouent. Un O_PATH d'un fichier renommé ou supprimé entre-temps se rouvre par son ancien chemin.
+
 ## Écarts connus (honnêtes)
 
 1. AF_NETLINK, AF_PACKET, SOCK_RAW : refusés (EAFNOSUPPORT, EPERM).
@@ -68,6 +92,8 @@ Syscalls enregistrés (45) : socket socketpair bind listen accept accept4 connec
 9. Tube : l'extrémité d'écriture dont le lecteur est fermé est annoncée HUP par `fs_pipe_ops.poll` (Linux : EPOLLERR) ; demande dans `docs/requests/net-1.md`.
 10. Les crochets de fork sont ceux de lkd_fork_host : un moteur qui forke lui-même doit appeler `lkd_fork_prepare` et `lkd_fork_finish` pour que les kqueue soient reconstruites.
 11. Un appel `epoll_wait` dont les éléments ont une source d'attente qui ne peut pas signaler tous les événements demandés (EPOLLOUT sur un objet à tube de disponibilité) ne les voit qu'à l'entrée de l'appel.
+12. SCM_RIGHTS, drapeaux : un tube créé par LKD a toujours un fd hôte non bloquant (fs, écart 5). Le processus qui le reçoit voit donc O_NONBLOCK (MESURE 2026-10-10, `F_GETFL` d'un tube bloquant reçu), et une lecture sans données y rend EAGAIN au lieu d'attendre (INFÉRÉ, `stream_rw`). Un eventfd reçu est bloquant même si l'émetteur l'a créé EFD_NONBLOCK (le drapeau est dans l'objet). Non corrigé : il faudrait un état de description partagé entre processus pour ces objets.
+13. SCM_RIGHTS d'un memfd : il part en fichier hôte supprimé. Le récepteur voit un fichier ordinaire sans nom `/memfd:` ni scellés.
 
 ## Suite possible
 

@@ -106,6 +106,11 @@ int pf_resolve(lkd_task *t, int mnt, const char *rel, struct pf_node *n);
 int pf_readdir(lkd_task *t, int mnt, const char *rel, uint64_t i, char name[256], uint8_t *dt, uint64_t *ino);
 int64_t pf_readlink(lkd_task *t, int mnt, const char *rel, char *buf, size_t cap);
 int pf_open(lkd_task *t, int mnt, const char *rel, uint32_t fl, uint32_t mode, lkd_fdobj **out);
+/* Importers of the records this module sends (fd.h): LKD_FDREC_DEV (dev.c), LKD_FDREC_PROCFS (file.c). */
+void pf_dev_register(void);
+void pf_file_register(void);
+/* The LKD_FDREC_PROCFS record of an object with a canonical gpath at position pos (file.c). */
+int pf_rec_export(lkd_fdobj *o, int64_t pos, int *hfd);
 void pf_vattr(const struct pf_node *n, struct lkd_vattr *va);
 /* Directory entries of a static directory node (/proc/sys..., /sys...). */
 struct pf_tent {

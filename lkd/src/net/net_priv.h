@@ -134,7 +134,7 @@ int net_nl_bind(lkd_task *t, struct net_sock *sk, uint64_t addr, uint32_t len);
  * Returns the count (1..3) or -errno (-EOPNOTSUPP for objects that cannot cross processes). */
 int net_scm_export(lkd_fdobj *o, int *hfds, int cap);
 /* Rebuild objects from received host fds (takes ownership of every fd). Fills objs; returns count. */
-int net_scm_import(const int *hfds, int n, lkd_fdobj **objs, int cap);
+int net_scm_import(lkd_task *t, const int *hfds, int n, lkd_fdobj **objs, int cap);
 
 /* ---- Event objects --------------------------------------------------------------------------- */
 

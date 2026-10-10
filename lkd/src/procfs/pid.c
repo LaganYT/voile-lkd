@@ -803,9 +803,16 @@ static int mem_fstat(lkd_task *t, lkd_fdobj *o, struct lx_stat *out)
 
 static void mem_release(lkd_fdobj *o) { free(o->priv); o->priv = NULL; }
 
+static int mem_export(lkd_fdobj *o, int *hfds, int cap)
+{
+    (void)cap;
+    struct mem_priv *m = o->priv;
+    return pf_rec_export(o, m->pos, hfds);
+}
+
 static const lkd_fd_ops g_mem_ops = {
     .name = "procmem", .read = mem_read, .write = mem_write, .lseek = mem_lseek, .fstat = mem_fstat,
-    .release = mem_release,
+    .release = mem_release, .export_fds = mem_export,
 };
 
 int pf_mem_open(lkd_task *viewer, const struct pf_node *n, uint32_t fl, lkd_fdobj **out)

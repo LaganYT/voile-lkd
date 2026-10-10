@@ -450,7 +450,7 @@ static int64_t deliver_rights(lkd_task *t, uint8_t *hctl, socklen_t hlen, uint64
     }
     if (!n) return 0;
     lkd_fdobj *objs[HOST_MAX_FDS * 2];
-    int nobj = net_scm_import(hfds, n, objs, (int)(sizeof objs / sizeof objs[0]));
+    int nobj = net_scm_import(t, hfds, n, objs, (int)(sizeof objs / sizeof objs[0]));
     int fdmax = ctl_cap >= sizeof(struct lx_cmsghdr) ? (int)((ctl_cap - sizeof(struct lx_cmsghdr)) / sizeof(int32_t)) : 0;
     int32_t gfds[HOST_MAX_FDS * 2];
     int inst = 0;

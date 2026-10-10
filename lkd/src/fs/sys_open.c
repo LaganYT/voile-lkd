@@ -88,6 +88,25 @@ int lkd_vfs_open(lkd_task *t, int dirfd, const char *gpath, uint32_t fl, uint32_
     return rc;
 }
 
+/* LKD_FDREC_FS (fd.h): a synthetic or virtual directory, or an O_PATH descriptor, that another host process sent.
+ * Its global guest path is opened again with the sender's flags, as a request of the receiver (net/core/scm.c
+ * would hand over the same description; here offsets and flags changed later are not shared, fd.h). */
+static int fs_rec_import(lkd_task *t, uint32_t fl, const void *data, size_t len, lkd_fdobj **out)
+{
+    const char *gp = data;
+    if (!len || memchr(gp, 0, len) != gp + len - 1 || gp[0] != '/') return -LX_EINVAL;
+    uint32_t keep = (fl & LX_O_PATH) ? (fl & (LX_O_PATH | LX_O_NOFOLLOW))
+                                     : (fl & (LX_O_ACCMODE | LX_O_NONBLOCK | LX_O_APPEND | LX_O_DIRECTORY | LX_O_NOATIME));
+    struct fs_res *r = malloc(sizeof *r);
+    if (!r) return -LX_ENOMEM;
+    unsigned rf = FS_R_GLOBAL | FS_R_NOMAGIC | ((keep & LX_O_NOFOLLOW) ? 0 : FS_R_FOLLOW);
+    int rc = fs_resolve(t, LX_AT_FDCWD, gp, rf, r);
+    if (rc == 0 && !r->exists) rc = -LX_ENOENT;
+    if (rc == 0) rc = open_resolved(t, r, keep, 0, out);
+    free(r);
+    return rc;
+}
+
 static int64_t do_open(lkd_task *t, int dirfd, uint64_t path_gva, uint32_t fl, uint32_t mode)
 {
     char path[LX_PATH_MAX];
@@ -182,4 +201,5 @@ void fs_register_open(void)
     LKD_REGISTER(creat);
     LKD_REGISTER(close);
     LKD_REGISTER(close_range);
+    lkd_fdrec_register(LKD_FDREC_FS, fs_rec_import);
 }

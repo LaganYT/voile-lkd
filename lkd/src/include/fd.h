@@ -11,6 +11,8 @@
  *     written to the host fd (lseek(fd, 0, SEEK_CUR), fcntl(F_GETFL/F_SETFL)), never cached;
  *   - objects without a host fd (virtual files, signalfd) keep their state in process memory and do not
  *     share it across fork. This is a documented gap, not something to fake.
+ * Across SCM_RIGHTS to another host process an object travels by its host fd, or by what ops->export_fds sends
+ * (a host twin, a record: see the end of this file); the receiver rebuilds it (net_scm_import).
  * The close-on-exec flag lives in the fd table entry (per descriptor, not per description) and is
  * mirrored on the host fd (FD_CLOEXEC) so that a host re-exec closes exactly what Linux would.
  */
@@ -49,6 +51,11 @@ typedef struct lkd_fd_ops {
     int (*describe)(lkd_fdobj *o, char *buf, size_t cap);/* text of readlink(/proc/<pid>/fd/N): "/a/b", "pipe:[12]", "socket:[9]", "anon_inode:[eventfd]", "/memfd:x (deleted)"; returns length or -errno; NULL: use o->gpath */
     int (*fdinfo)(lkd_fdobj *o, char *buf, size_t cap);  /* extra lines of /proc/<pid>/fdinfo/N (after pos/flags/mnt_id); returns length; NULL: none */
     void (*release)(lkd_fdobj *o);                       /* last reference dropped: close host fds, free priv */
+    /* SCM_RIGHTS to another host process: fills hfds with new host descriptors (close-on-exec, owned by the caller)
+     * that carry this open file description, returns their count (at most cap) or -errno. NULL: a dup of host_fd, or
+     * -EOPNOTSUPP without one. Objects with no host descriptor of their own send a host twin with the same behaviour
+     * (devices) or a record (lkd_fdrec_export below). */
+    int (*export_fds)(lkd_fdobj *o, int *hfds, int cap);
 } lkd_fd_ops;
 
 struct lkd_fdobj {
@@ -118,5 +125,34 @@ int lkd_fd_list(lkd_task *t, int *fds, int max);
 /* net: an object is being destroyed; remove it from every epoll set that references it (Linux removes
  * a description from epoll when its last reference goes). Weak no-op default in core. */
 void lkd_net_object_released(lkd_fdobj *o);
+
+/* ---- Records: open file descriptions that travel as a request to open the same thing again ------- */
+
+/* An object with no host descriptor and no host twin (a synthetic or virtual directory, an O_PATH descriptor, a
+ * generated /proc file, /dev/full, a signalfd) crosses a host process boundary as a record: a 16 KiB POSIX shm
+ * object, unlinked at once, that starts with a magic and holds the record type, the Linux status flags and the
+ * owning module's data. The receiving process asks that module to rebuild the object from the data
+ * (net_scm_import). The rebuilt object is a new open file description of the same thing, opened with the
+ * receiver's rights; offsets and flags changed afterwards are not shared (the rule above for objects without a
+ * host fd). The data never holds host paths or pointers, only guest-level names. */
+enum {
+    LKD_FDREC_FS = 1,          /* fs: guest path opened again (synthetic and virtual directories, O_PATH) */
+    LKD_FDREC_DEV = 2,         /* procfs: an emulated character device without a host twin (/dev/full, O_PATH) */
+    LKD_FDREC_PROCFS = 3,      /* procfs: a generated file of /proc or /sys, or /proc/<pid>/mem, with its position */
+    LKD_FDREC_SIGNALFD = 4,    /* sig: a signalfd with its mask (reads the receiver's own signals, as on Linux) */
+    LKD_FDREC_TYPES
+};
+#define LKD_FDREC_MAX_DATA (16384u - 32u)
+
+/* New record carrying data (at most LKD_FDREC_MAX_DATA bytes): *hfd receives a close-on-exec host descriptor.
+ * Returns 1 (one descriptor, the count export_fds returns) or -errno. */
+int lkd_fdrec_export(uint32_t type, uint32_t status_flags, const void *data, size_t len, int *hfd);
+/* Rebuild an object from a record's data, in the receiving task t. */
+typedef int (*lkd_fdrec_import_fn)(lkd_task *t, uint32_t status_flags, const void *data, size_t len, lkd_fdobj **out);
+/* A module registers the importer of its record type at init. */
+void lkd_fdrec_register(uint32_t type, lkd_fdrec_import_fn fn);
+/* 0: host_fd is not a record (left untouched); 1: *out holds the rebuilt object; -errno: a record that could not
+ * be rebuilt. host_fd stays owned by the caller in every case. */
+int lkd_fdrec_import(lkd_task *t, int host_fd, lkd_fdobj **out);
 
 #endif /* LKD_FD_H */

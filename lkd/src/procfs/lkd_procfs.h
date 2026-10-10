@@ -59,6 +59,13 @@ int lkd_procfs_render_wire(const struct lkd_procfs_wire *req, char **text, size_
  * mmap_zero); 0 otherwise. For the mm module (docs/requests/procfs-2.md). */
 int lkd_procfs_dev_is_zero(struct lkd_fdobj *o);
 
+/* A host descriptor that arrives without a guest path (SCM_RIGHTS from another host process, the runtime's
+ * standard descriptors) and is a host twin of an emulated device (/dev/null, /dev/zero, /dev/random,
+ * /dev/urandom): 1 and *out = that device, which takes host_fd; 0 when it is not one (host_fd untouched);
+ * -errno. st is fstat(host_fd). For the fs module. */
+struct stat;
+int lkd_procfs_dev_adopt(int host_fd, const struct stat *st, uint32_t lx_flags, struct lkd_fdobj **out);
+
 /* Number of logical CPUs presented to the guest (/sys/devices/system/cpu, /proc/cpuinfo, /proc/stat):
  * the host's hw.logicalcpu. */
 int lkd_procfs_ncpu(void);

@@ -17,3 +17,7 @@ LKD_MODULES(DEFINE_WEAK_HOOKS)
 /* procfs service used by mm (mmap of /dev/zero, request procfs-2): no procfs, no /dev/zero object. */
 struct lkd_fdobj;
 LKD_WEAK int lkd_procfs_dev_is_zero(struct lkd_fdobj *o) { (void)o; return 0; }
+/* procfs service used by fs (host twins of the emulated devices): no procfs, the descriptor stays a host stream. */
+struct stat;
+LKD_WEAK int lkd_procfs_dev_adopt(int host_fd, const struct stat *st, uint32_t lx_flags, struct lkd_fdobj **out)
+{ (void)host_fd; (void)st; (void)lx_flags; (void)out; return 0; }

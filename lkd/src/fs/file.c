@@ -13,6 +13,7 @@
 #include <unistd.h>
 
 #include "fs_priv.h"
+#include "lkd_procfs.h"
 #include "mm.h"
 
 /* ---- Identity mapping -------------------------------------------------------------------------- */
@@ -408,9 +409,27 @@ static int dir_describe(lkd_fdobj *o, char *buf, size_t cap)
     return (n < 0) ? -LX_EINVAL : ((size_t)n >= cap ? (int)cap : n);
 }
 
+/* SCM_RIGHTS of an object with no host descriptor (synthetic and virtual directories, O_PATH): a record with its
+ * global guest path, which the receiver opens again with the same flags (LKD_FDREC_FS, sys_open.c). */
+static int fs_rec_export(lkd_fdobj *o, int *hfds)
+{
+    const char *gp = o->gpath ? o->gpath : "/";
+    size_t len = strlen(gp) + 1;
+    if (len > LKD_FDREC_MAX_DATA) return -LX_ENAMETOOLONG;
+    return lkd_fdrec_export(LKD_FDREC_FS, atomic_load(&o->status_flags), gp, len, &hfds[0]);
+}
+
+static int dir_export(lkd_fdobj *o, int *hfds, int cap)
+{
+    (void)cap;
+    if (o->host_fd < 0) return fs_rec_export(o, hfds);
+    hfds[0] = fcntl(o->host_fd, F_DUPFD_CLOEXEC, 0);
+    return hfds[0] < 0 ? (int)LKD_HOST_ERR() : 1;
+}
+
 const lkd_fd_ops fs_dir_ops = {
     .name = "dir", .lseek = dir_lseek, .fstat = dir_fstat, .getdents = fs_getdents, .fsync = dir_fsync,
-    .describe = dir_describe, .release = file_release,
+    .describe = dir_describe, .release = file_release, .export_fds = dir_export,
 };
 
 int fs_obj_is_dir(lkd_fdobj *o)
@@ -450,8 +469,14 @@ static int path_fstat(lkd_task *t, lkd_fdobj *o, struct lx_stat *out)
     return file_fstat(t, o, out);
 }
 
+static int path_export(lkd_fdobj *o, int *hfds, int cap)
+{
+    (void)cap;
+    return fs_rec_export(o, hfds);
+}
+
 const lkd_fd_ops fs_path_ops = {
-    .name = "path", .fstat = path_fstat, .describe = dir_describe, .release = file_release,
+    .name = "path", .fstat = path_fstat, .describe = dir_describe, .release = file_release, .export_fds = path_export,
 };
 
 /* ---- Streams: host ttys, character devices, FIFOs and sockets LKD did not create ---------------- */
@@ -560,6 +585,12 @@ int fs_wrap_host_fd(int host_fd, uint32_t lx_flags, const char *gpath, const cha
 {
     struct stat st;
     if (fstat(host_fd, &st) < 0) return LKD_HOST_ERR();
+    /* A host character device that arrives without a guest path (SCM_RIGHTS, the runtime's standard descriptors)
+     * and is the host twin of an emulated device is that device: /dev/null with its Linux numbers and behaviour. */
+    if (!gpath && S_ISCHR(st.st_mode)) {
+        int a = lkd_procfs_dev_adopt(host_fd, &st, lx_flags, out);
+        if (a != 0) return a < 0 ? a : 0;
+    }
     const lkd_fd_ops *ops;
     lkd_fd_kind kind;
     if (S_ISREG(st.st_mode)) { ops = &fs_file_ops; kind = LKD_FD_FILE; }

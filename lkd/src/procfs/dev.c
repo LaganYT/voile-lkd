@@ -12,6 +12,7 @@
  * drivers/misc/ntsync.c) is the sig module's (ntsync.h); it exists while lkd_ntsync_available().
  */
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "ntsync.h"
@@ -98,7 +99,31 @@ int64_t pf_dev_readlink(const struct pf_node *n, char *buf, size_t cap)
 
 /* ---- Objects ----------------------------------------------------------------------------------- */
 
-static int dev_of(lkd_fdobj *o) { return (int)(uintptr_t)o->priv - 1; }
+/* Host twins: the macOS device that behaves like the Linux one. An object may hold a descriptor on its twin, one
+ * that arrived from another host process or one opened the first time the object is sent. The twin carries the
+ * open file description through SCM_RIGHTS: another LKD process turns it back into this device
+ * (lkd_procfs_dev_adopt), any other host process gets a working device. Reads and writes stay in LKD: macOS
+ * refuses writes to /dev/urandom (MESURE: EPERM), its devices cannot be polled (MESURE: poll gives POLLNVAL, kevent
+ * EINVAL), and the Linux rules (MAX_RW_COUNT, a signal ending a long urandom read) are kept here. /dev/full has no
+ * macOS twin and an O_PATH descriptor has no host form: both travel as a record (LKD_FDREC_DEV). */
+static const char *const g_twin[D_N] = {
+    [D_NULL] = "/dev/null", [D_ZERO] = "/dev/zero", [D_RANDOM] = "/dev/random", [D_URANDOM] = "/dev/urandom",
+};
+static dev_t g_twin_rdev[D_N];
+static pthread_once_t g_twin_once = PTHREAD_ONCE_INIT;
+
+static void twin_init(void)
+{
+    for (int i = 0; i < D_N; i++) {
+        struct stat st;
+        g_twin_rdev[i] = (dev_t)-1;
+        if (g_twin[i] && stat(g_twin[i], &st) == 0 && S_ISCHR(st.st_mode)) g_twin_rdev[i] = st.st_rdev;
+    }
+}
+
+struct devobj { int sub; int twin; };   /* twin: host descriptor on the host twin, or -1 */
+
+static int dev_of(lkd_fdobj *o) { return ((const struct devobj *)o->priv)->sub; }
 
 #define CHUNK 65536u
 
@@ -187,14 +212,105 @@ static int dev_describe(lkd_fdobj *o, char *buf, size_t cap)
     return n < 0 ? -LX_EINVAL : ((size_t)n >= cap ? (int)cap : n);
 }
 
+static void dev_release(lkd_fdobj *o)
+{
+    struct devobj *d = o->priv;
+    if (!d) return;
+    if (d->twin >= 0) close(d->twin);
+    free(d);
+    o->priv = NULL;
+}
+
+/* SCM_RIGHTS: a descriptor on the host twin, opened with the guest's access mode and carrying its O_NONBLOCK and
+ * O_APPEND (the receiver reads them from the host description); a record when there is no twin. */
+static int dev_export(lkd_fdobj *o, int *hfds, int cap)
+{
+    (void)cap;
+    struct devobj *d = o->priv;
+    uint32_t fl = atomic_load(&o->status_flags);
+    if (g_twin[d->sub] && !(fl & LX_O_PATH)) {
+        int rc = 0;
+        pthread_mutex_lock(&o->lock);
+        if (d->twin < 0) {
+            int hflags = 0;
+            uint32_t un = 0;
+            if (lkd_open_flags_to_host(fl & LX_O_ACCMODE, &hflags, &un) == 0) d->twin = open(g_twin[d->sub], hflags | O_CLOEXEC);
+        }
+        if (d->twin >= 0) {
+            int h = fcntl(d->twin, F_GETFL);
+            if (h >= 0) {
+                h &= ~(O_NONBLOCK | O_APPEND);
+                if (fl & LX_O_NONBLOCK) h |= O_NONBLOCK;
+                if (fl & LX_O_APPEND) h |= O_APPEND;
+                fcntl(d->twin, F_SETFL, h);
+            }
+            hfds[0] = fcntl(d->twin, F_DUPFD_CLOEXEC, 0);
+            rc = hfds[0] < 0 ? (int)LKD_HOST_ERR() : 1;
+        }
+        pthread_mutex_unlock(&o->lock);
+        if (rc) return rc;
+        /* the host refused its own device: the record still carries it to an LKD process */
+    }
+    int32_t sub = d->sub;
+    return lkd_fdrec_export(LKD_FDREC_DEV, fl, &sub, sizeof sub, &hfds[0]);
+}
+
 static const lkd_fd_ops g_zero_ops = {
     .name = "dev", .read = dev_read, .write = dev_write, .lseek = dev_lseek, .poll = dev_poll, .fstat = dev_fstat,
-    .describe = dev_describe,
+    .describe = dev_describe, .release = dev_release, .export_fds = dev_export,
 };
 static const lkd_fd_ops g_dev_ops = {
     .name = "dev", .read = dev_read, .write = dev_write, .lseek = dev_lseek, .poll = dev_poll, .fstat = dev_fstat,
-    .describe = dev_describe,
+    .describe = dev_describe, .release = dev_release, .export_fds = dev_export,
 };
+
+static int dev_new(int sub, uint32_t flags, int twin, lkd_fdobj **out)
+{
+    struct devobj *d = malloc(sizeof *d);
+    if (!d) return -LX_ENOMEM;
+    d->sub = sub;
+    d->twin = twin;
+    lkd_fdobj *o = lkd_fdobj_new(LKD_FD_DEV, sub == D_ZERO ? &g_zero_ops : &g_dev_ops, -1, flags, d);
+    if (!o) { free(d); return -LX_ENOMEM; }
+    char gp[32];
+    snprintf(gp, sizeof gp, "/dev/%s", g_dev[sub].name);
+    o->gpath = strdup(gp);
+    o->ino = dev_ino(sub);
+    *out = o;
+    return 0;
+}
+
+/* A host descriptor that arrives without a guest path (SCM_RIGHTS from another host process, the runtime's
+ * standard descriptors): a host twin becomes the Linux device, with its numbers (1:3 for /dev/null), its Linux
+ * behaviour and the status flags of the host description. Takes host_fd when it returns 1. */
+int lkd_procfs_dev_adopt(int host_fd, const struct stat *st, uint32_t lx_flags, lkd_fdobj **out)
+{
+    if (!S_ISCHR(st->st_mode)) return 0;
+    pthread_once(&g_twin_once, twin_init);
+    for (int i = 0; i < D_N; i++) {
+        if (!g_twin[i] || g_twin_rdev[i] == (dev_t)-1 || st->st_rdev != g_twin_rdev[i]) continue;
+        uint32_t fl = (lx_flags & ~(uint32_t)(LX_O_NONBLOCK | LX_O_APPEND)) | LX_O_LARGEFILE;
+        int h = fcntl(host_fd, F_GETFL);
+        if (h >= 0 && (h & O_NONBLOCK)) fl |= LX_O_NONBLOCK;
+        if (h >= 0 && (h & O_APPEND)) fl |= LX_O_APPEND;
+        int rc = dev_new(i, fl, host_fd, out);
+        return rc < 0 ? rc : 1;
+    }
+    return 0;
+}
+
+/* LKD_FDREC_DEV: one of the memory devices (mem.c), in the sender's status flags. */
+static int dev_rec_import(lkd_task *t, uint32_t fl, const void *data, size_t len, lkd_fdobj **out)
+{
+    (void)t;
+    int32_t sub;
+    if (len != sizeof sub) return -LX_EINVAL;
+    memcpy(&sub, data, sizeof sub);
+    if (sub < D_NULL || sub > D_URANDOM) return -LX_EINVAL;
+    return dev_new(sub, (fl & (LX_O_ACCMODE | LX_O_NONBLOCK | LX_O_APPEND | LX_O_PATH)) | LX_O_LARGEFILE, -1, out);
+}
+
+void pf_dev_register(void) { lkd_fdrec_register(LKD_FDREC_DEV, dev_rec_import); }
 
 /* The mm module maps /dev/zero as anonymous memory (drivers/char/mem.c mmap_zero). */
 int lkd_procfs_dev_is_zero(lkd_fdobj *o) { return o && o->ops == &g_zero_ops; }
@@ -226,14 +342,5 @@ int pf_dev_open(lkd_task *t, const struct pf_node *n, uint32_t fl, lkd_fdobj **o
         return rc;
     }
     }
-    lkd_fdobj *o = lkd_fdobj_new(LKD_FD_DEV, n->sub == D_ZERO ? &g_zero_ops : &g_dev_ops, -1,
-                                 (fl & (LX_O_ACCMODE | LX_O_NONBLOCK | LX_O_APPEND | LX_O_PATH)) | LX_O_LARGEFILE,
-                                 (void *)(uintptr_t)(n->sub + 1));
-    if (!o) return -LX_ENOMEM;
-    char gp[32];
-    snprintf(gp, sizeof gp, "/dev/%s", g_dev[n->sub].name);
-    o->gpath = strdup(gp);
-    o->ino = n->ino;
-    *out = o;
-    return 0;
+    return dev_new(n->sub, (fl & (LX_O_ACCMODE | LX_O_NONBLOCK | LX_O_APPEND | LX_O_PATH)) | LX_O_LARGEFILE, -1, out);
 }
