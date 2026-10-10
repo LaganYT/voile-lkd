@@ -56,3 +56,12 @@ Run:   `FEXDARWIN_LKD=1 FEXDARWIN_ROOT=<rootfs> FEXDARWIN_ROOT_RO=1 FEXDARWIN_BI
   another view of the same bytes starts write-protected (code rewritten through it runs from the RX view), also when
   the code page sits 32 MiB into the object. With the fexdarwin-run of 7450c4e: mmap of 4 GiB 37.6 ms with 18
   mappings, 13.6 s with 2,017, past 120 s with 8,017. After: 0.03, 0.07 and 0.26 ms, W32 PASS.
+- w33_forkwx: the child of a fork runs the engine's dispatcher right after the fork (request wine-5). macOS starts the
+  child's thread with the MAP_JIT write state its parent thread had at its last context switch
+  (tests/darwin-process/f7_fork_jitstate), so a parent switched out during one of the engine's JIT writes forked a
+  child that died with SIGBUS on the dispatcher's first instruction. A caller with 60,000 direct calls to 256 leaves
+  is translated once; each of 600 rounds maps the leaves again, runs the caller (every call site is linked), unmaps
+  the leaves (the engine undoes all those links at once, one short JIT write each, while 2 spinner threads per CPU
+  load the machine), then forks a child that exits at once. Arguments: rounds, call sites, spinner threads. With the
+  fexdarwin-run of 8ddfed2: 15 of 600 children died (`FATAL unhandled fault: signal 10`, pc in the dispatcher, esr
+  0x8200000f), about 35 s. After: W33 PASS.
