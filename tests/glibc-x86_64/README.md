@@ -7,3 +7,8 @@ Run:   `FEXDARWIN_LKD=1 FEXDARWIN_ROOT=<rootfs> FEXDARWIN_ROOT_RO=1 FEXDARWIN_BI
 - w23_codedatapage: mutex in an rw- 4 KiB page sharing its 16 KiB host page with running r-x code (nptunix.so
   layout). Before the LKD mm/watch.c fix: SIGSEGV (rc 139). After: PASS (exact counter, mutex free).
 - w24_condtimedwait: pthread_cond_timedwait on CLOCK_REALTIME times out at 100 ms (30/30).
+- w25_hostpid (with w25_steamclient, run by `hostpid.sh`, which builds them with zig): `/proc/<pid>/lkd_host_pid`
+  in the main thread, a thread, after fork, exec and posix_spawn, and guest/steam-hostpid.so (getpid() from a library
+  named steamclient.so, from elsewhere, in a thread, after a fork). The script checks each host pid against `ps`
+  while the witness waits: a live fexdarwin-run, with the expected macOS parent.
+  `ROOT=<rootfs> ZIG=<zig> tests/glibc-x86_64/hostpid.sh`. Before the LKD change: no lkd_host_pid file. After: PASS.

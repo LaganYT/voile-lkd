@@ -15,13 +15,14 @@ Private. See [docs/V1.md](docs/V1.md) for what works, the measurements and the k
 | `fexdarwin/` | The host program, `fexdarwin-run`: FEXCore translates the guest's x86-64 code to arm64, every guest `SYSCALL` goes to LKD. Signals, thread kicks, self-modifying code, fork/exec, the safety watchdog and a guest thread dump (`FEXDARWIN_DUMP_DIR`). |
 | `fex/` | Submodule [Zagrios/FEX](https://github.com/Zagrios/FEX): FEX-Emu with the Darwin port. |
 | `wsd/` | The window server: Cocoa windows, Metal presentation of the frames the guest renders (zero copy), keyboard and mouse events, and audio output through CoreAudio. The guest's Wine drivers (`wineobelisk.drv`, `wineobeliskaudio.drv`, Neptune's `nptunix`) talk to it over a UNIX socket (`wsd/PROTOCOL.md`, `wsd/wsd_protocol.h`). `wsdctl` injects test input. |
+| `guest/` | x86-64 Linux libraries for the guest, built with zig: `steam-hostpid.so`, an `LD_PRELOAD` library that makes `getpid()` return the macOS pid of the host process when Valve's `steamclient.so` calls it (`/proc/<pid>/lkd_host_pid`); Obelisk's Steam engine drops a client whose pid is not a live macOS process. |
 | `tests/` | Witness programs: x86-64 ELF (`elf-x86_64`, freestanding), glibc (`glibc-x86_64`), Darwin facts, graphics, the EAC probe campaign. |
 | `tools/dev/` | Development scripts that drive a whole session (authenticated Rocket League launch, offline Free Play, mouse stress). |
 | `tools/epic-launch/` | Builds an Epic launch plan with Obelisk's `epic-kit` (development only; Obelisk does this itself). |
 | `docs/` | `V1.md`, and `journal/`, the research and integration journal (French). |
 
-What runs inside the guest comes from elsewhere: voile-wine built for Linux x86-64, a Debian x86-64 root, Neptune's
-Direct3D client DLLs; Voile builds and ships them.
+Apart from `guest/`, what runs inside the guest comes from elsewhere: voile-wine built for Linux x86-64, a Debian
+x86-64 root, Neptune's Direct3D client DLLs; Voile builds and ships them.
 
 ## Building
 
@@ -31,7 +32,8 @@ brew install cmake ninja
 ./build.sh
 ```
 
-Results: `lkd/build/lib/liblkd.a`, `fexdarwin/build/host/fexdarwin-run`, `wsd/bin/wsd`, `wsd/bin/wsdctl`.
+Results: `lkd/build/lib/liblkd.a`, `fexdarwin/build/host/fexdarwin-run`, `wsd/bin/wsd`, `wsd/bin/wsdctl`, and with
+zig (`ZIG=<path to zig>` or zig on `PATH`) `guest/bin/steam-hostpid.so`.
 LKD's own tests: `lkd/check.sh`.
 
 ## Running a guest program

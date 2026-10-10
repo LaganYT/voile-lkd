@@ -10,3 +10,4 @@ tests/*/bin/
 tests/*/bin-exec/
 wsd/bin/
 input/bin/
+guest/bin/
