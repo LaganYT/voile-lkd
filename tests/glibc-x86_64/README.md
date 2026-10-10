@@ -32,3 +32,13 @@ Run:   `FEXDARWIN_LKD=1 FEXDARWIN_ROOT=<rootfs> FEXDARWIN_ROOT_RO=1 FEXDARWIN_BI
   fexdarwin-run built from c545aa6: 2,390 to 6,153 rounds out of 20,000 return the old value (write tracking
   protects a page only after it translated the page's code; a store that lands in between is never seen). After:
   W29 PASS (5 runs out of 5, 20,000 rounds in about 60 ms instead of 1.6 s).
+- w30_scmdev: SCM_RIGHTS of descriptors that LKD emulates, between guest processes in different host processes. A
+  child sends /dev/null (O_RDWR|O_NONBLOCK), /dev/zero, /dev/urandom, /dev/full, a synthetic directory (a parent of a
+  bind mount, absent from the root), /proc/self, /proc/self/status after reading 6 bytes, an O_PATH descriptor and a
+  signalfd; the witness uses each one (fstat numbers 1:3, 1:5, 1:9, 1:7, read and write rules, poll, mmap of
+  /dev/zero, getdents64, openat and fchdir relative to the directories, the /proc position, /proc/self/fd links,
+  O_PATH rules, its own SIGUSR1 read from the signalfd) and sends three back. Then Wine's case: a child with /dev/null
+  as fds 0, 1 and 2 execs the witness, which sends them. Run with the synthetic directory and its entry:
+  `FEXDARWIN_BIND="/lkdsyn/w=<dir with bin>:ro" ... fexdarwin-run /lkdsyn/w/w30_scmdev /lkdsyn w`. With the
+  fexdarwin-run of c545aa6 (same LKD as 97f227e): `SCM_RIGHTS of a dev object cannot cross host processes`, nothing
+  received. After: W30 PASS.
