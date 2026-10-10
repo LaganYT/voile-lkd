@@ -274,3 +274,44 @@ Le module d'ancienne génération veut donc un préchargeur 64 bits nommé `wine
 Reste la lenteur. Une fois l'enfant accepté, le mapping dure 234 à 240 s : le traceur exécute le même code auto-modifiant entre ses arrêts ptrace. `--smc=full` ramène le chemin du 210 à 1,5 s, mais casse l'injection : le bloc de l'adresse de retour 9 est retraduit en boucle (`NoExec instruction in entry block: 9`, plus d'un million de fois) et le traceur ne voit jamais le SIGSEGV. La voie propre est dans FEXCore, une validation par bloc (le `ForceFullSMCDetection` existe, réservé aux hacks mono) pour les pages qui prennent des fautes d'écriture en série. Pas fait ici : FEX n'accepte pas de contribution générée.
 
 EFLAGS (corrigé dans fexdarwin) : `ReconstructCompactedEFLAGS` de FEXCore ajoute aussi les octets de sa copie NZCV (`flags[24..27]`) aux bits 24 à 31. MESURE : le bit 31 apparaissait dans l'eflags de ptrace (et dans le r11 qu'en tire LKD aux arrêts de syscall), et dans le `uc_mcontext` des signaux, que Wine recopie dans le CONTEXT Windows. `GuestEflags` (`include/Host.h`) ne garde que les bits définis de RFLAGS, bit 1 à 1, pour `GetRegs` et les cadres de signal. Témoin `w27_eflags` : 11 échecs sur 12 contextes avec le moteur du runtime -13-dev, PASS après. w22, w23, w24 et w26 passent. Sondes EAC : 4 376 contrôles, les mêmes 38 échecs avant et après. Les verdicts d'EAC ne changent pas (301 et 210 comme avant). Rapport : `sailover/build/experiments/eldenring-linux-20261010/reports/09-eac-210-eldenring.md`.
+
+## Code réécrit sans arrêt : la page quitte le suivi en écriture, le mapping d'EAC d'ELDEN RING passe de 233 s à 2,8 s (2026-10-10, 12:40)
+
+Contexte : avec le préchargeur renommé (section précédente), le module de lancement d'EAC d'ELDEN RING rend 301, mais son mapping dure 233 à 240 s. Rocket League met 0,4 s sur la même pile.
+
+MESURE, profil du moteur de `c545aa6` (`FEXDARWIN_PROFILE=1`, `FEXDARWIN_HITCH_LOG=1`) :
+- Toutes les fautes tombent dans une seule page hôte de 16 Kio, `memfd+0x5c000` du module, dans son PT_LOAD RWX. C'est la page de la boucle qui fait les écritures.
+- 352 112 fautes d'écriture SMC en 11,26 s, autant d'invalidations, autant de blocs retraduits. Chaque écriture coûte une faute, l'invalidation de la page et une nouvelle traduction, environ 30 µs en tout.
+- L'enfant forké reprend la même page au même rythme.
+- Ce sont surtout des données que le module écrit. Une fois la page passée en vérification, le processus du bootstrapper ne compte plus que 130 fautes SMC et 256 invalidations sur toute sa vie.
+
+Correctif, dans FEX et fexdarwin (LKD n'est pas modifié) :
+- Zagrios/FEX `3d0290743`. Une instruction sans octets décodés (lecture dans une page non exécutable, opcode invalide) n'est plus vérifiée. `ValidateCode` sur zéro octet comparait le CRC attendu à TMP1, que rien n'avait calculé. Le bloc se retirait et se retraduisait en boucle, d'où les « NoExec instruction in entry block: 9 » de `--smc=full` et le SIGSEGV que le traceur d'EAC n'a jamais vu. `w11_badjump` en `--smc=full` : 1 290 237 retraductions et 5,45 s avant (la boucle finit par hasard ici), 2 retraductions et 0,24 s après.
+- Zagrios/FEX `d08fd1541`. `SyscallHandler::NeedsCodeValidation(Start, Length)` : en mode mtrack, les instructions d'un bloc qui tombent dans une page pour laquelle le frontend répond vrai reçoivent la vérification d'octets du mode full. FEXCore pose la question une fois par page de code du bloc, mutex d'invalidation tenu.
+- fexdarwin, `CodeValidation` (`3932460`). Une page hôte qui prend 128 fautes d'écriture SMC en 100 ms quitte le suivi en écriture jusqu'au prochain exec. Le gestionnaire de faute la marque, puis l'invalide lui-même : l'invalidation de LKD peut manquer si un autre fil a retiré la surveillance entre-temps, et une traduction commencée avant la marque peut finir après sans surveiller la page. `MarkGuestExecutableRange` ne demande plus à LKD de surveiller une page marquée. Les autres pages restent en suivi.
+
+MESURE, runtime et préfixe privés, arbre Wine renommé du rapport 09 :
+
+| Essai | Avant | Après |
+|---|---|---|
+| ELDEN RING, lancé par `sh` | 301 en 232,6 s (240,2 s avec profil) | 301 en 2,74 à 2,80 s, 6 essais dont 2 avec profil |
+| ELDEN RING derrière `steam.exe` | 301 en 235,1 s (rapport 09) | 301 en 2,74 et 2,75 s |
+| ELDEN RING, arbre Wine d'origine | 210 après 85 s | 210 après 0,18 s |
+| Rocket League | 301 en 0,40 et 0,43 s | 301 en 0,38 à 0,42 s, 6 essais |
+
+- Aucune page de Rocket League ne quitte le suivi : 10 fautes SMC au plus par processus et par tranche de 10 s, loin du seuil. D3D11 par DXMT et D3D12 par D3DMetal : sortie 0, relectures MATCH, médianes égales au bruit près.
+- Une page vérifiée coûte. Une boucle ALU serrée y tourne 1,7 fois plus lentement (378 ms contre 225 ms), et la page le reste jusqu'à l'exec même quand les écritures cessent. Je n'ai pas ajouté de retour en suivi : il faudrait invalider la page pour retrouver des blocs sans vérification, et aucun cas mesuré ne le demande.
+
+Témoins :
+- `w28_smcstorm` (nouveau, autonome) : une tempête de 20 000 écritures, puis réécritures entre appels, écriture dans le bloc en cours, boucle chaude qui corrige sa fonction, instruction à cheval sur une page suivie et une page vérifiée, code écrit par le noyau (`read` d'un tube), appel dans la page rendue non exécutable (SIGSEGV à la bonne adresse). 26/26 en mtrack et en full, 15/26 en `--smc=none`. La tempête prend 0 à 1 ms au lieu de 130 ms.
+- `w29_smcthreads` (nouveau, glibc) : un fil corrige le code, un autre l'exécute, un troisième écrit des données dans la même page. W29 PASS 5 fois sur 5 après. Avant, 2 390 à 6 153 tours sur 20 000 rendent l'ancienne valeur. Cause, déjà là avant ce travail : le suivi en écriture ne protège une page qu'après avoir traduit son code, et une écriture qui tombe entre les deux n'est jamais vue. INFÉRÉ : FEX amont a le même ordre (`MarkGuestExecutableRange` après la compilation). Pas corrigé pour les pages qui restent en suivi.
+- `w01` à `w21` (sauf `w07`, qui dépasse son délai avant comme après), `w23`, `w24`, `w26` et `w27` : mêmes résultats avant et après. `w06_smc` : 20/20 en mtrack et en full, 12/20 en none, comme avant.
+- `w22_mutexsig` échoue parfois sur les deux moteurs, par un saut vers une adresse invalide : 1 fois sur 66 avant, 2 fois sur 67 après. `w26_reaper` a pris une fois le SIGBUS du répartiteur FEX juste après un fork (demande `wine-5`, déjà connue), puis 6 passages sur 6.
+- Suite LKD : 42 programmes passent, `test_sig_futex` dépasse son délai comme sur l'arbre intact. Sondes EAC : 4 376 contrôles, les mêmes 38 échecs.
+- Empreintes des binaires du jeu et d'EAC inchangées.
+
+Limites :
+- Les FPS de Rocket League en partie ne sont pas mesurés. Sans session Epic le jeu quitte au bout de 19 s sans afficher d'image, et l'app Obelisk servait à un autre travail. Comme aucune page de RL ne quitte le suivi, FEXCore produit le même code qu'avant ; il reste une question par page de code à chaque compilation, qui rend faux sans chercher tant qu'aucune page n'est marquée.
+- Une instruction invalide dans une page vérifiée n'est pas revérifiée. Si un programme corrige ses octets en place plus tard, le bloc lève encore SIGILL. Je n'ai vu aucun programme le faire.
+
+Rapport : `sailover/build/experiments/eldenring-linux-20261010/reports/11-fex-smc-eac.md`.
