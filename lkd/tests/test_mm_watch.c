@@ -11,6 +11,7 @@
 #include <sys/mman.h>
 #include <sys/ucontext.h>
 #include <sys/wait.h>
+#include <time.h>
 
 #include "ltest.h"
 #include "fake_engine.h"
@@ -371,10 +372,63 @@ LT_TEST(aliased_views_share_the_watch)
     down();
 }
 
+/* A view of a whole object mapped after code ran from a small view of one of its pages deep inside: only the
+ * matching host page of the new view starts watched, and a store through it drops the translations. Then a
+ * 1 GiB view in a mm with 4,000 VMAs (a D3D12 game's committed UPLOAD buffer, ELDEN RING): the map does not
+ * walk the VMAs once per host page (a 4 GiB view took 13.6 s under the engine before the fix, witness w32). */
+LT_TEST(late_view_of_a_large_object)
+{
+    up();
+    char path[] = "/tmp/lkd-alias-XXXXXX";
+    int hfd = mkstemp(path);
+    LT_CHECK(hfd >= 0);
+    unlink(path);
+    const uint64_t osz = 1ull << 30, off = 0x2000000;   /* the test window holds 4 GiB */
+    LT_EQ(ftruncate(hfd, (off_t)osz), 0);
+    lkd_fdobj *o = NULL;
+    LT_EQ(lkd_fs_wrap_host_fd(hfd, LX_O_RDWR, NULL, &o), 0);
+    int64_t f = MMAP(0, 4000 * 0x2000, RW, PA);
+    LT_CHECK(f > 0);
+    for (int i = 0; i < 2000; i++) sc(LKD_NR_mprotect, (uint64_t)f + (uint64_t)i * 0x2000, 0x1000, LX_PROT_READ, 0, 0, 0);
+    int64_t b = lkd_mm_map(T->mm, 0, 0x4000, RX, LX_MAP_SHARED, o, off, NULL);       /* view B: one page */
+    LT_CHECK(b > 0);
+    LT_EQ(lkd_mm_watch_code((uint64_t)b, 0x10), 0);
+    struct timespec t0, t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    int64_t a = lkd_mm_map(T->mm, 0, 0x4000000, RW, LX_MAP_SHARED, o, 0, NULL);     /* view A: 64 MiB */
+    int64_t c = lkd_mm_map(T->mm, 0, osz, RW, LX_MAP_SHARED, o, 0, NULL);          /* view C: 1 GiB */
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    LT_CHECK(a > 0 && c > 0);
+    double ms = (t1.tv_sec - t0.tv_sec) * 1e3 + (t1.tv_nsec - t0.tv_nsec) / 1e6;
+    LT_MSG(ms < 250, "64 MiB and 1 GiB views took %.1f ms", ms);
+    LT_EQ(lkd_mm_code_watched((uint64_t)a + off), 1);
+    LT_EQ(lkd_mm_code_watched((uint64_t)c + off), 1);
+    LT_EQ(lkd_mm_code_watched((uint64_t)a + off - 0x4000), 0);
+    LT_EQ(lkd_mm_code_watched((uint64_t)a + off + 0x4000), 0);
+    LT_EQ(lkd_mm_code_watched((uint64_t)c), 0);
+    LT_EQ(lkd_mm_code_watched((uint64_t)c + osz - 0x4000), 0);
+    LT_EQ(host_writable((uint64_t)a + off), 0);
+    LT_EQ(host_writable((uint64_t)c + off + 0x4000), 1);
+    LT_EQ(H((uint64_t)c + osz - 1)[0], 0);                                          /* a fresh object reads zeros */
+    int n = fake_invalidate_count;
+    LT_EQ(store((uint64_t)c + off + 8, 0x90), 0);                                   /* rewrite through C */
+    LT_EQ(H((uint64_t)b)[8], 0x90);
+    int sawb = 0;
+    for (int k = n; k < fake_invalidate_count; k++) if (fake_inval_start[k % 16] == (uint64_t)b) sawb = 1;
+    LT_CHECK(sawb);
+    LT_EQ(lkd_mm_code_watched((uint64_t)a + off), 0);
+    lkd_mm_unmap(T->mm, (uint64_t)a, 0x4000000);
+    lkd_mm_unmap(T->mm, (uint64_t)b, 0x4000);
+    lkd_mm_unmap(T->mm, (uint64_t)c, osz);
+    lkd_fdobj_put(o);
+    down();
+}
+
 int main(void)
 {
     LT_RUN(watch_then_store);
     LT_RUN(aliased_views_share_the_watch);
+    LT_RUN(late_view_of_a_large_object);
     LT_RUN(endless_retry_is_bounded);
     LT_RUN(store_to_nonresident_watched_page);
     LT_RUN(real_faults_stay_faults);

@@ -214,15 +214,66 @@ static void watch_page(lkd_mm *mm, uint64_t p)
     mm_host_protect(p, mm_hps, wanted_prot(mm, p));
 }
 
+/* Watch lock held. */
+static void alias_sync_page(lkd_mm *mm, uint64_t p)
+{
+    uint64_t al[MAX_ALIASES];
+    int n = mm_alias_pages(mm, p, al, MAX_ALIASES), any = 0;
+    for (int i = 0; i < n; i++) if (al[i] != p && mm_watched(al[i])) any = 1;
+    if (any) watch_page(mm, p);
+}
+
+#define MAX_VIEWS 32
+
+/* A new shared VMA [s, e): its host pages whose bytes another view of the object holds as translated code
+ * start watched. The interior host pages belong to the new VMA alone, so another view of the same object
+ * holds their bytes at one constant shift, or does not hold them: one walk of the VMAs, then a scan of the
+ * watch bits of each other view (64 pages per word). The two edge pages may be shared with neighbouring
+ * VMAs and keep the page-by-page lookup. The old loop walked every VMA for every host page: a 4 GiB view
+ * cost 13.6 s in a process with 2,000 mappings (witness w32), with the watch lock held all along, which
+ * stalled every thread that translated code meanwhile. */
 void mm_watch_alias_sync(lkd_mm *mm, uint64_t s, uint64_t e)
 {
     if (!wbits) return;
+    uint64_t is = HP_UP(s), ie = HP_DOWN(e);
     mm_watch_lock();
-    for (uint64_t p = HP_DOWN(s); p < HP_UP(e); p += mm_hps) {
-        uint64_t al[MAX_ALIASES];
-        int n = mm_alias_pages(mm, p, al, MAX_ALIASES), any = 0;
-        for (int i = 0; i < n; i++) if (al[i] != p && mm_watched(al[i])) any = 1;
-        if (any) watch_page(mm, p);
+    if (is >= ie) {
+        for (uint64_t p = HP_DOWN(s); p < HP_UP(e); p += mm_hps) alias_sync_page(mm, p);
+        mm_watch_unlock();
+        return;
+    }
+    if (s < is) alias_sync_page(mm, HP_DOWN(s));
+    if (ie < e) alias_sync_page(mm, ie);
+    struct { uint64_t lo, hi; int64_t d; } sh[MAX_VIEWS];
+    int n = 0, slow = 0;
+    pthread_rwlock_rdlock(&mm->vlock);
+    mm_vma *nv = vt_first_end_after(&mm->vt, is);
+    if (!nv || nv->start > is || nv->end < ie || !(nv->vflags & VF_HOSTSHARED) || !nv->bk) {
+        slow = 1;
+    } else {
+        int64_t base = (int64_t)(nv->start - (nv->pgoff + nv->bk->hbias));   /* address of host offset 0 */
+        for (mm_vma *w = vt_first(&mm->vt); w && !slow; w = vt_next(&mm->vt, w)) {
+            if (w == nv || !(w->vflags & VF_HOSTSHARED) || !mm_same_object(w->bk, nv->bk)) continue;
+            int64_t d = (int64_t)(w->start - (w->pgoff + w->bk->hbias)) - base;   /* page p of nv is q = p + d in w */
+            if (!d || (d & (int64_t)(mm_hps - 1))) continue;
+            int64_t lo = (int64_t)HP_DOWN(w->start) - d, hi = (int64_t)HP_UP(w->end) - d;
+            if (lo < (int64_t)is) lo = (int64_t)is;
+            if (hi > (int64_t)ie) hi = (int64_t)ie;
+            if (lo >= hi) continue;
+            if (n == MAX_VIEWS) { slow = 1; break; }
+            sh[n].lo = (uint64_t)lo; sh[n].hi = (uint64_t)hi; sh[n].d = d;
+            n++;
+        }
+    }
+    pthread_rwlock_unlock(&mm->vlock);
+    if (slow) {
+        for (uint64_t p = is; p < ie; p += mm_hps) alias_sync_page(mm, p);
+    } else {
+        for (int i = 0; i < n; i++) {
+            uint64_t qe = sh[i].hi + (uint64_t)sh[i].d;
+            for (uint64_t q = mm_next_watched(sh[i].lo + (uint64_t)sh[i].d, qe); q < qe; q = mm_next_watched(q + mm_hps, qe))
+                watch_page(mm, q - (uint64_t)sh[i].d);
+        }
     }
     mm_watch_unlock();
 }
