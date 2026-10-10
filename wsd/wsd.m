@@ -698,7 +698,9 @@ static CAMetalLayer *make_metal_layer(void) {
 - (WsdWindow *)overlayAt:(NSRect)px {
   WsdWindow *o = self.overlay;
   double s = backing_scale(self.window);
+  BOOL created = NO;
   if (!o) {
+    created = YES;
     o = [WsdWindow new];
     o.isOverlay = YES;
     o.windowId = self.windowId;
@@ -710,7 +712,9 @@ static CAMetalLayer *make_metal_layer(void) {
     self.overlay = o;
     LOG("window %u: overlay plane created", self.windowId);
   }
-  if (!NSEqualRects(px, self.overlayPx) || !o.layer.superlayer) {
+  /* A new plane is placed even at the rectangle of the one before it: a game that recreates its swapchain removes
+   * the plane and presents again to the same rectangle, and the new layer would stay 0x0 (never displayed). */
+  if (created || !NSEqualRects(px, self.overlayPx) || !o.layer.superlayer) {
     NSSize vs = self.view.bounds.size;
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
