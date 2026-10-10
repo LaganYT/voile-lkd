@@ -59,7 +59,7 @@ Mémoire après fork (mesuré, régions de 64 Mio) :
 - `munmap` et `mprotect` faits par l'enfant sur sa vue ne touchent pas celle du parent.
 - `minherit(VM_INHERIT_SHARE)` sur une région privée anonyme : après fork la région est partagée comme un `MAP_SHARED` (écritures visibles dans les deux sens). `minherit(VM_INHERIT_NONE)` : la région n'existe pas dans l'enfant (`mach_vm_region` ne la trouve pas). Ces deux appels réussissent et jouent le rôle de `MADV_DONTFORK` et de « rendre partagé après coup ».
 - Coût d'un défaut de copie sur écriture (pages de 16 Kio, médiane de 3 séries sur 256 Mio) : premier accès à une page vierge 683 ns, accès suivant sans défaut 7 ns, première écriture de l'enfant après fork 1454 ns par page, première écriture du parent avec un enfant inactif 2252 ns par page, réécriture par le parent après la mort de l'enfant 378 ns par page (l'état de copie sur écriture n'est donc pas nettoyé tout de suite).
-- Région `MAP_JIT` : le code compilé par le parent s'exécute dans l'enfant ; l'enfant peut le réécrire (bascule `pthread_jit_write_protect_np`) ; la copie du parent reste intacte. Le fork d'une région `MAP_JIT` coûte beaucoup plus cher qu'un fork ordinaire (voir F2).
+- Région `MAP_JIT` : le code compilé par le parent s'exécute dans l'enfant ; l'enfant peut le réécrire (bascule `pthread_jit_write_protect_np`) ; la copie du parent reste intacte. Le fork d'une région `MAP_JIT` coûte beaucoup plus cher qu'un fork ordinaire (voir F2). L'enfant part de l'état d'écriture sauvegardé au dernier changement de contexte du fil qui forke, pas de son état réel (voir F7).
 
 ### F2. Coût de fork() (`f2_fork_cost`, journal `evidence/darwin-process/f2_fork_cost.log`)
 
@@ -156,6 +156,27 @@ Autres mesures : `mmap(MAP_SHARED)` de `/dev/zero` donne `ENODEV` (Linux rend de
 Entrée de mémoire Mach (B3) : `mach_make_memory_entry_64(MAP_MEM_NAMED_CREATE)` rend un droit d'envoi (type 0x10000), pas un descripteur. Taille arrondie à 16 Kio (5000 donne 16384), 256 Gio accepté. `mach_vm_map` de l'entrée deux fois donne deux vues qui s'alias ; une vue `copy=TRUE` faite après l'écriture reçoit le contenu et n'est pas touchée par les écritures ultérieures de la vue partagée. Au `fork`, `VM_INHERIT_SHARE` partage et `VM_INHERIT_COPY` isole l'écriture de l'enfant. Rendez-vous entre deux processus sans lien : en substituant le port d'amorçage de l'enfant avec `posix_spawnattr_setspecialport_np(TASK_BOOTSTRAP_PORT)`, l'enfant envoie un port de réception, le parent lui envoie l'entrée (et un fileport d'un descripteur `shm_open`) dans un message avec descripteur de port, l'enfant les mappe à une autre adresse et le parent voit ses écritures (les deux PASS), sans passer par `launchd`. `MAP_SHARED|MAP_ANON` n'a pas de poignée : seuls les enfants de `fork` en héritent.
 
 Deux erreurs du programme corrigées pendant cette reprise (premier journal conservé : `f6_memfd.run1-mach-invalid-right-segv.log`) : `mach_vm_map` avec une protection maximale `VM_PROT_ALL` sur une entrée créée en lecture-écriture renvoie `KERN_INVALID_RIGHT` (17), ce qui faisait planter le test (`SIGSEGV`, code de sortie 139) ; une vue `copy=TRUE` faite avant l'écriture reçoit un instantané vide, et l'attente du test était fausse.
+
+### F7. État d'écriture MAP_JIT de l'enfant d'un fork (`f7_fork_jitstate`, 2026-10-10, demande `wine-5`)
+
+Mesuré sur macOS 27 (Darwin 27.0.0), Apple M5 Max. 5 PASS, 0 FAIL, 40 forks par cas. Chaque enfant exécute une instruction d'une page MAP_JIT sous un gestionnaire SIGBUS temporaire, donc aucun enfant ne plante et aucun rapport de crash n'est écrit.
+
+`pthread_jit_write_protect_np()` bascule le fil appelant entre « MAP_JIT inscriptible » et « MAP_JIT exécutable » sans entrer dans le noyau (28 ns la paire, mesuré). Le fil unique de l'enfant d'un fork ne reçoit pas l'état que le fil du parent a au moment du fork, mais celui que le noyau a sauvegardé au dernier changement de contexte de ce fil :
+
+| Ce que fait le parent avant le fork | Enfants qui ne peuvent pas exécuter le code MAP_JIT |
+| --- | --- |
+| se bloque (`usleep`) en mode exécution | 0/40 |
+| se bloque en mode écriture, puis repasse en exécution sans appel système | 37/40 à 39/40 (SIGBUS, faute de permission à l'exécution) |
+| idem, et l'enfant appelle `pthread_jit_write_protect_np(1)` avant tout | 0/40 |
+| tourne 30 ms en mode écriture (préempté) | 29/40 |
+| fait un appel système (`getpid`) en mode écriture | 0/40 |
+| prend une faute de page (premier accès) en mode écriture | 0/40 |
+| un gestionnaire de signal se bloque en mode écriture | 40/40 |
+| 4 autres fils se bloquent sans cesse en mode écriture, pas celui qui forke | 0/40 |
+
+Un fil créé (`pthread_create`) après que son créateur s'est bloqué en mode écriture exécute le code MAP_JIT : 40/40. Seul le fork est touché.
+
+Déduit : l'état propre au fil n'est sauvegardé qu'au changement de contexte (blocage ou préemption), pas à l'entrée d'un appel système ni d'une faute de page. Le fork copie cette sauvegarde, qui peut être périmée. Le parent n'est pas touché, son registre garde l'état réel. Conséquence pour un moteur JIT qui forke : l'enfant doit reposer l'état qu'il croit avoir (`pthread_jit_write_protect_np(1)` hors d'une écriture) avant d'exécuter du code MAP_JIT.
 
 ## G. Synchronisation et événements
 
