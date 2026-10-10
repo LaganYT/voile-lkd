@@ -17,3 +17,9 @@ Trois `wine cmd /c echo hi` de suite ensuite : 0 erreur (m2-cmd-031..033). Pas d
 
 Même période que l'interblocage de fork de mm (témoin w18_forkjit). Corrigé côté LKD : chaque verrou tenu à travers `fork()` est maintenant reconstruit dans l'enfant (`lkd_fork_reinit_mutex`, `lkd_fork_reinit_rwlock`), jamais déverrouillé. mm n'appelle plus `ops->invalidate_code` en tenant le verrou mmap (CONVENTIONS 3.4).
 INFERE : un SIGBUS à l'exécution du dispatcher dans l'enfant (pc = adresse fautive) touche la mémoire de code du JIT du moteur, que LKD ne gère pas (protection MAP_JIT, état d'écriture par thread au moment du fork). Ce n'est pas démontré côté LKD : à revoir côté moteur si l'erreur revient avec un hôte lié à la bibliothèque actuelle.
+
+## Résolution (2026-10-10)
+
+Cause, côté moteur et pas dans LKD. macOS donne au fil de l'enfant d'un fork l'état d'écriture MAP_JIT que le fil du parent avait à son dernier changement de contexte, pas son état réel (fait F7 de `docs/journal/darwin-process-facts-a.md`, test `tests/darwin-process/f7_fork_jitstate.c`). Le moteur bascule ce mode sans appel système (`JITWriteScope` de FEXCore, quelques dizaines de nanosecondes à chaque traduction, liaison ou déliaison de bloc). Un fil préempté pendant une de ces écritures, puis revenu en exécution, forkait donc un enfant qui ne pouvait pas exécuter le répartiteur : SIGBUS, faute de permission à l'exécution (esr 0x8200000f), sur la première instruction après le retour de la syscall. Fréquence mesurée : une faute pour 30 à 60 démarrages de Wine dans les essais du 2026-10-10, plus sous charge.
+
+Correctif fexdarwin : `ForkChild` repose l'état du fil (`pthread_jit_write_protect_np`, exécution hors d'une écriture) avant tout retour au code JIT. Témoin `tests/glibc-x86_64/src/w33_forkwx.c` : 15 enfants morts sur 600 tours avec l'ancien moteur, 0 après.
