@@ -490,9 +490,7 @@ void lkd_proc_set_layout(lkd_task *t, const struct lkd_proc_layout *l)
     if (old) { free(old->auxv); free(old); }
 }
 
-/* famsvc opcode of task: wake the wait4/waitid callers of a process living in the receiver. */
-#define TASK_OP_WAKE_WAITERS (LKD_FAMSVC_OP_TASK_FIRST + 0)
-
+/* TASK_OP_WAKE_WAITERS: wake the wait4/waitid callers of a process living in the receiver. */
 static void op_wake_waiters(lkd_famsvc_msg *req, lkd_famsvc_msg *resp)
 {
     int32_t pid = 0;

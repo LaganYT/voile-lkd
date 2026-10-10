@@ -58,7 +58,8 @@ Construction commune `./build.sh -k 0` puis `tools/run_tests.sh build/tests` (`t
 
 ## Réponses ENOSYS ou EPERM visibles à l'intérieur de syscalls enregistrés
 
-- `prlimit64` qui modifie un autre processus, `sched_setaffinity`, `sched_setscheduler`, `sched_setattr`, `setpriority` sur un thread d'un autre processus hôte : ENOSYS journalisé (le service inter-processus `famsvc.h` de sig réserve les opcodes 96 à 111 à task, pas encore utilisés). `setpriority` par groupe ou utilisateur : ENOSYS.
+- `prlimit64` qui modifie un autre processus, `sched_setscheduler`, `sched_setattr`, `setpriority` sur un thread d'un autre processus hôte : ENOSYS journalisé. `setpriority` par groupe ou utilisateur : ENOSYS.
+- `sched_setaffinity` sur un thread d'un autre processus hôte passe par le service inter-processus (`famsvc.h`, opcode `TASK_OP_SET_AFFINITY`, 97) : le processus qui possède le thread pose le masque et le publie. wineserver applique ainsi le `SetThreadAffinityMask` d'un jeu. Avant, ENOSYS faisait échouer cet appel, et Wwise abandonne un fil dont il ne peut poser le masque (ELDEN RING, 2026-10-10). MESURE : `affinity_of_a_thread_in_another_host_process` dans `test_task_proc`.
 - `clock_nanosleep` sur une horloge de temps CPU : EOPNOTSUPP journalisé. CPU clock d'un autre thread : EINVAL journalisé.
 - `arch_prctl(ARCH_*_XCOMP_*)` : EINVAL journalisé (l'ensemble XSAVE est au moteur).
 

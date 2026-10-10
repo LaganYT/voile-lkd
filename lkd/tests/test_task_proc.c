@@ -822,6 +822,44 @@ LT_TEST(registry_sees_other_processes)
     close(pfd[0]); close(pfd[1]); close(go[0]); close(go[1]);
 }
 
+/* sched_setaffinity(2) on a thread of another host process, as wineserver does for a game's SetThreadAffinityMask:
+ * the thread reads the new mask, and so does the caller; an empty mask is EINVAL and a reaped thread ESRCH
+ * (kernel/sched/syscalls.c sched_setaffinity, v6.12). */
+LT_TEST(affinity_of_a_thread_in_another_host_process)
+{
+    int up[2], go[2];
+    LT_EQ(pipe(up), 0);
+    LT_EQ(pipe(go), 0);
+    fflush(NULL);
+    int64_t pid = SC1(fork, 0);
+    if (pid == 0) {
+        alarm(20);
+        lkd_task *c = lkd_current();
+        put32(up[1], 7);                          /* past the fork hooks: its family service listens */
+        get32(go[0]);
+        uint64_t own = 0;
+        int64_t n = sct(c, LKD_NR_sched_getaffinity, 0, 8, P(&own), 0, 0);
+        put32(up[1], n == 8 && own == 1);
+        get32(go[0]);
+        child_exit_group(c, 0);
+    }
+    LT_CHECK(pid > 0);
+    LT_EQ(get32(up[0]), 7);
+    uint64_t one = 1, none = 0, m = 0;
+    LT_EQ(SC3(sched_setaffinity, pid, 8, P(&one)), 0);
+    LT_EQ(SC3(sched_getaffinity, pid, 8, P(&m)), 8);
+    LT_EQ(m, 1);
+    put32(go[1], 1);
+    LT_EQ(get32(up[0]), 1);
+    LT_ERRNO(SC3(sched_setaffinity, pid, 8, P(&none)), LX_EINVAL);
+    put32(go[1], 2);
+    int status;
+    LT_EQ(SC4(wait4, pid, P(&status), 0, 0), pid);
+    LT_EQ(status, 0);
+    LT_ERRNO(SC3(sched_setaffinity, pid, 8, P(&one)), LX_ESRCH);
+    close(up[0]); close(up[1]); close(go[0]); close(go[1]);
+}
+
 /* A parent blocked in wait4 is shown sleeping in the registry (EAC reads /proc/<ppid>/status). */
 LT_TEST(waiting_parent_shows_sleeping)
 {
@@ -932,6 +970,7 @@ int main(void)
     LT_RUN(sigstop_and_sigcont_reach_wait4);
     LT_RUN(vfork_child_shares_memory_and_blocks_parent);
     LT_RUN(registry_sees_other_processes);
+    LT_RUN(affinity_of_a_thread_in_another_host_process);
     LT_RUN(waiting_parent_shows_sleeping);
     LT_RUN(blocked_thread_shows_sleeping);
     LT_RUN(wait_is_interruptible);

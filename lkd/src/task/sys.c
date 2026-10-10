@@ -10,6 +10,7 @@
 #include <sys/sysctl.h>
 #include <unistd.h>
 
+#include "famsvc.h"
 #include "fd.h"
 #include "mm.h"
 #include "ptrace.h"
@@ -298,6 +299,31 @@ LKD_SYSCALL(sched_getaffinity)
     return lkd_user_write(LKD_ARGP(2), &mask, sizeof mask) ? -LX_EFAULT : (int64_t)sizeof mask;
 }
 
+static int set_affinity_local(lkd_task *x, uint64_t mask)
+{
+    if (!(mask & online_mask())) return -LX_EINVAL;
+    /* Stored and reported; macOS offers no thread placement API, so it is not enforced. */
+    x->affinity = mask & online_mask();
+    lkd_registry_publish(x);
+    return 0;
+}
+
+/* TASK_OP_SET_AFFINITY: the mask of a thread of the receiver, from a caller in another host process. wineserver
+ * gives a Windows thread's SetThreadAffinityMask to the game's thread this way, and a program such as Wwise gives up
+ * on a thread whose mask cannot be set. */
+struct affinity_req { int32_t tid; int32_t pad; uint64_t mask; };
+
+static void op_set_affinity(lkd_famsvc_msg *req, lkd_famsvc_msg *resp)
+{
+    struct affinity_req a;
+    if (req->len != sizeof a) { resp->status = -LX_EPROTO; return; }
+    memcpy(&a, req->data, sizeof a);
+    lkd_task *x = a.tid > 0 ? lkd_task_lookup(a.tid) : NULL;
+    if (!x) { resp->status = -LX_ESRCH; return; }
+    resp->status = set_affinity_local(x, a.mask);
+    lkd_task_put(x);
+}
+
 LKD_SYSCALL(sched_setaffinity)
 {
     uint64_t len = LKD_ARGU(1), mask = 0;
@@ -307,16 +333,25 @@ LKD_SYSCALL(sched_setaffinity)
     int err;
     lkd_task *x = find_target(t, LKD_ARGI(0), &remote, &err);
     if (err) return err;
-    if (!x) {
-        lkd_log_once("sched_setaffinity on a thread of another host process is not supported");
-        return -LX_ENOSYS;
+    if (x) {
+        int r = set_affinity_local(x, mask);
+        lkd_task_put(x);
+        return r;
     }
-    if (!(mask & online_mask())) { lkd_task_put(x); return -LX_EINVAL; }
-    /* Stored and reported; macOS offers no thread placement API, so it is not enforced. */
-    x->affinity = mask & online_mask();
-    lkd_registry_publish(x);
-    lkd_task_put(x);
-    return 0;
+    /* A thread of another host process: the process that owns it sets the mask and publishes it. */
+    if (!(mask & online_mask())) return -LX_EINVAL;
+    struct affinity_req a = { remote.info.tid, 0, mask };
+    lkd_famsvc_msg req, resp;
+    memset(&req, 0, sizeof req);
+    memset(&resp, 0, sizeof resp);
+    req.op = TASK_OP_SET_AFFINITY;
+    req.target_pid = remote.info.tgid;
+    req.target_tid = remote.info.tid;
+    req.data = &a;
+    req.len = sizeof a;
+    int r = lkd_famsvc_call_pid(remote.info.tgid, &req, &resp, 0);
+    lkd_famsvc_msg_free(&resp);
+    return r;
 }
 
 LKD_SYSCALL(sched_yield) { sched_yield(); return 0; }
@@ -1029,4 +1064,5 @@ void task_sys_register(void)
     LKD_REGISTER(set_tid_address); LKD_REGISTER(set_robust_list); LKD_REGISTER(get_robust_list);
     LKD_REGISTER(exit); LKD_REGISTER(exit_group); LKD_REGISTER(arch_prctl); LKD_REGISTER(prctl);
     LKD_REGISTER(iopl); LKD_REGISTER(ioperm); LKD_REGISTER(unshare); LKD_REGISTER(setns);
+    lkd_famsvc_register(TASK_OP_SET_AFFINITY, op_set_affinity);
 }

@@ -142,6 +142,10 @@ int task_de_thread(lkd_task *t, int32_t *old_tid);
 /* Wake local threads of process pid that wait in wait4. */
 void tasks_wake_waiters_local(int32_t pid);
 
+/* famsvc opcodes of task (LKD_FAMSVC_OP_TASK_FIRST .. LAST), answered by the host process that owns the task. */
+#define TASK_OP_WAKE_WAITERS (LKD_FAMSVC_OP_TASK_FIRST + 0) /* tasks.c: wake the wait4 callers of a process */
+#define TASK_OP_SET_AFFINITY (LKD_FAMSVC_OP_TASK_FIRST + 1) /* sys.c: sched_setaffinity of one of its threads */
+
 /* ---- wait.c ----------------------------------------------------------------------------------- */
 void wait_note_host_child(pid_t host_pid, int32_t guest_pid);
 void wait_forget_host_children(void);       /* fork child: the parent's host children are not ours */
