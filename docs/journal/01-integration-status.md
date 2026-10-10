@@ -374,3 +374,22 @@ Vus en passant, non corrigés :
 - La racine Debian n'a ni `/etc/os-release`, ni `/etc/machine-id`, ni `/etc/hostname`, qu'EAC lit.
 
 Suite : 43 programmes passent, `test_sig_futex` dépasse son délai au même cas qu'avant. Rapport : `sailover/build/experiments/eldenring-linux-20261010/reports/13-eldenring-apres-301.md`.
+
+## ELDEN RING dans Obelisk : Steam tient, puis Wwise abandonne faute de masque CPU (2026-10-10, 14:45)
+
+Contexte : l'entrée précédente laissait ELDEN RING passer son 301 en essai privé, sans hôte Steam. Premier essai dans Obelisk (runtime -13-dev2, `ntdll.so` de voile-wine `829f80c`, moteur `f587e5a3`).
+
+MESURE, trois lancements depuis le bouton « Lancer » :
+- Lancement 1 : 301 en 1,37 s, fenêtre plein écran 2560x1440, device D3D12. Le moteur Steam d'Obelisk ferme la connexion du jeu une seconde après son ouverture, puis steamclient.so s'arrête : `fatal stalled cross-thread pipe (pipe is disconnected)`. C'est le pid invité de l'entrée du 2026-10-10, 08:20 : EAC retire `LD_PRELOAD`, `steam-hostpid.so` manque dans `eldenring.exe`.
+- Correctif hors de ce dépôt : Voile écrit `/etc/ld.so.preload` (`/opt/obelisk/steam-hostpid.so`) dans la racine. Le chargeur de la glibc le lit à chaque exec, quel que soit l'environnement. Les traces du rapport 13 montrent que seul ld.so lit ce fichier (un `access` par exec), jamais le module d'EAC.
+- Lancement 2 : `steam-hostpid.so` est dans la liste des modules du jeu, la connexion Steam tient 42 s. Le jeu crée sa chaîne d'échange, puis s'arrête sur `movl $0xdeadba, 0` (`eldenring+0x1ebb809`), le plantage du rapport 07. Sur la pile : `Failed MagicOrchestra_Wwise::MOSoundManager::Initialize()` et `DL_PANIC is firing core dump...`. Juste avant : `wineserver: file_set_error() can't map error: Function not implemented`.
+- Cause : l'`AkCreateThread` de Wwise (`eldenring+0x2385af4` à `0x2385b47`) crée le fil, puis appelle `SetThreadAffinityMask`. En cas d'échec, il ferme le fil et rend AK_Fail. wineserver applique ce masque par `sched_setaffinity(unix_tid)` sur un fil du jeu, donc d'un autre processus hôte, et LKD répondait ENOSYS.
+
+Correctif LKD : `sched_setaffinity` sur un fil d'un autre processus hôte passe par le service de la famille (opcode `TASK_OP_SET_AFFINITY`). Le processus qui possède le fil pose le masque et le publie. Cas `affinity_of_a_thread_in_another_host_process` dans `test_task_proc` : ENOSYS avant, réussite après.
+
+MESURE après le correctif :
+- Lancement 3 : 301 en 1,39 s, plus de `can't map error`. mmdevapi et `wineobeliskaudio` sont chargés : Wwise s'initialise. La chaîne d'échange passe en `WSI up 2560x1440`, une image est présentée.
+- Le jeu s'arrête ensuite dans Neptune : `ucrtbase+0x7b1b0` lit l'adresse 1, appelé par `npt_id3d12object_default_SetName` (d3d12.dll). L'appelant, `eldenring+0x1e8eae5`, fait `call *0x210(%rax)` avec `(1, &{va, 2}, &{2})` : c'est le slot 66, `ID3D12GraphicsCommandList2::WriteBufferImmediate` (marqueurs). Dans la d3d12.dll de Neptune, la table v0 de `ID3D12GraphicsCommandList` plus 0x210 tombe sur `npt_id3d12heap1_default_vtbl_storage + 0x30`, le `SetName` de la table suivante. INFÉRÉ : la liste a été créée avec l'IID de la v0, et le jeu l'utilise comme une v2 sans QueryInterface. Cela marche sous Windows et vkd3d-proton, où une seule table couvre toutes les versions. Neptune donne à l'enveloppe la table de l'IID demandé. À traiter dans Neptune, non fait ici.
+- Rocket League, essai privé avec ce moteur et `/etc/ld.so.preload` : 301 en 0,41 s. Sans `/opt/obelisk`, le chargeur écrit une ligne `cannot be preloaded ... ignored` par processus, sans autre effet.
+
+Suite : 43 programmes passent, `test_sig_futex` dépasse son délai au même cas qu'avant. Rapport : `sailover/build/experiments/eldenring-linux-20261010/reports/14-eldenring-app-titre.md`.
