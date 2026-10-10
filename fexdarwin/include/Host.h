@@ -90,6 +90,15 @@ struct Host {
 
 extern Host* G;
 
+// The guest's RFLAGS as the Linux kernel shows them (ptrace registers, signal frames): the defined bits of x86-64
+// RFLAGS, with reserved bit 1 set. ReconstructCompactedEFLAGS also ORs in the bytes where FEXCore keeps its NZCV copy
+// (flags[24..27]), so bits 24-31 can come out set (bit 31 in tracers and signal handlers), which no x86 CPU does.
+inline uint32_t GuestEflags(FEXCore::Core::InternalThreadState* Th) {
+  // CF, 1, PF, AF, ZF, SF, TF, IF, DF, OF, IOPL, NT, RF, VM, AC, VIF, VIP, ID
+  constexpr uint32_t Defined = 0x3f7fd7;
+  return (G->CTX->ReconstructCompactedEFLAGS(Th, false, nullptr, 0) & Defined) | 0x2;
+}
+
 // ---- thread management (GuestThread.cpp) ----
 // Creates the FEXCore thread state for a new guest thread. The caller fills StartRip/StartRsp/... then calls RunGuestThread
 // on the host thread that will execute it.

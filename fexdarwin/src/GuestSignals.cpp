@@ -129,7 +129,7 @@ bool DarwinSignalDelegator::DeliverGuestSignal(GuestThread* T, ucontext_t* Uc, c
     return false; // the kernel kills the process for a synchronous signal it cannot deliver
   }
 
-  const uint32_t EFlags = G->CTX->ReconstructCompactedEFLAGS(Th, false, nullptr, 0);
+  const uint32_t EFlags = GuestEflags(Th);
 
   // Stack selection: the alternate stack only when the handler asked for it and the thread is not already on it.
   const uint64_t InterruptedSp = St.gregs[X::REG_RSP];

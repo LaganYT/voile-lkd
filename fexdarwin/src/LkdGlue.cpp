@@ -66,7 +66,7 @@ int GetRegs(lkd_task* t, lkd_regs* R) {
   R->orig_rax = T->OrigRax;
   R->rip = St.rip;
   R->cs = St.cs_idx;
-  R->eflags = G->CTX->ReconstructCompactedEFLAGS(Th, false, nullptr, 0);
+  R->eflags = GuestEflags(Th);
   R->rsp = St.gregs[X::REG_RSP];
   R->ss = St.ss_idx;
   R->fs_base = St.fs_cached;
@@ -448,7 +448,7 @@ int FrameBuild(lkd_task* t, const lkd_delivery* D) {
   auto* T = GT(t);
   auto* Th = T->State;
   auto& St = Th->CurrentFrame->State;
-  const uint32_t EFlags = G->CTX->ReconstructCompactedEFLAGS(Th, false, nullptr, 0);
+  const uint32_t EFlags = GuestEflags(Th);
   const uint64_t InterruptedSp = St.gregs[X::REG_RSP];
   uint64_t Sp = D->use_altstack ? D->altstack.ss_sp + D->altstack.ss_size : InterruptedSp - 128; // red zone
   Sp -= sizeof(Linux::XState);

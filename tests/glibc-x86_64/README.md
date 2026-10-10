@@ -19,3 +19,9 @@ Run:   `FEXDARWIN_LKD=1 FEXDARWIN_ROOT=<rootfs> FEXDARWIN_ROOT_RO=1 FEXDARWIN_BI
   the dying parent (SI_USER, its pid), then again when the subreaper dies, and the witness reaps the orphan. Build
   and run as above, with no argument (5 guest processes at most). With the fexdarwin-run of the -13-dev runtime:
   8 failures (PPid of the dead middle process, getppid 1, parent unreadable, no SIGCHLD, no wait). After: W26 PASS.
+- w27_eflags: the RFLAGS a tracer and a signal handler see. Flags set by xor, add (overflow, carry) and cmp just before
+  a syscall: in the signal frame of a tgkill to itself (uc_mcontext REG_EFL), and at the getpid entry stops of a traced
+  child (NT_PRSTATUS eflags, equal to r11), again after the witness ran code from a page it keeps writing. Checks the
+  status flags, bit 1 and IF set, and no reserved bit (3, 5, 15, 22-63). Build and run as above, no argument. With the
+  fexdarwin-run of the -13-dev runtime: 11 failures out of 12 contexts, all with bit 31 set (FEXCore's
+  ReconstructCompactedEFLAGS packs its NZCV bytes into bits 24-31). After: W27 PASS.
