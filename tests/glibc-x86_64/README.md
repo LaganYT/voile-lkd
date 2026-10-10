@@ -25,3 +25,10 @@ Run:   `FEXDARWIN_LKD=1 FEXDARWIN_ROOT=<rootfs> FEXDARWIN_ROOT_RO=1 FEXDARWIN_BI
   status flags, bit 1 and IF set, and no reserved bit (3, 5, 15, 22-63). Build and run as above, no argument. With the
   fexdarwin-run of the -13-dev runtime: 11 failures out of 12 contexts, all with bit 31 set (FEXCore's
   ReconstructCompactedEFLAGS packs its NZCV bytes into bits 24-31). After: W27 PASS.
+- w29_smcthreads: code rewritten by one thread and run by another, while a third keeps storing data into the same
+  16 KiB host page. After a 100 ms warm-up (the storm moves the page to per-instruction checks, fexdarwin
+  CodeValidation), 20,000 rounds: the writer patches `mov eax, imm32` to the round number and publishes it, the runner
+  serializes (cpuid) and must get that number back. Build and run as above, optional argument the round count. With
+  fexdarwin-run built from c545aa6: 2,390 to 6,153 rounds out of 20,000 return the old value (write tracking
+  protects a page only after it translated the page's code; a store that lands in between is never seen). After:
+  W29 PASS (5 runs out of 5, 20,000 rounds in about 60 ms instead of 1.6 s).

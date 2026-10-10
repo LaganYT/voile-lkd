@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "DarwinSyscallHandler.h"
+#include "CodeValidation.h"
 #include <FEXCore/Utils/GuestBase.h>
 #include "DarwinSignalDelegator.h"
 #include "LkdGlue.h"
@@ -200,13 +201,18 @@ extern "C" int fexdarwin_lkd_watch_code(uint64_t gva, uint64_t len);
 void DarwinSyscallHandler::MarkGuestExecutableRange(FEXCore::Core::InternalThreadState*, uint64_t Start, uint64_t Length) {
   if (LkdEnabled()) {
     // mm removes the write permission of the host pages that hold translated code; the first store to one comes back
-    // through the fault handler (HandleSmcWrite).
-    if (G->Opt.SmcMode == "mtrack") fexdarwin_lkd_watch_code(Start, Length);
+    // through the fault handler (HandleSmcWrite). Pages that left write tracking stay writable: their translations
+    // check their own bytes (NeedsCodeValidation).
+    if (G->Opt.SmcMode == "mtrack" && !CodeValidation::Validated(Start, Length)) fexdarwin_lkd_watch_code(Start, Length);
     return;
   }
   if (G->Opt.SmcMode == "mtrack") {
     G->Mem.MarkSmc(Start, Length);
   }
+}
+
+bool DarwinSyscallHandler::NeedsCodeValidation(uint64_t Start, uint64_t Length) {
+  return LkdEnabled() && CodeValidation::Validated(Start, Length);
 }
 
 void DarwinSyscallHandler::InvalidateGuestCodeRange(FEXCore::Core::InternalThreadState* Thread, uint64_t Start, uint64_t Length) {

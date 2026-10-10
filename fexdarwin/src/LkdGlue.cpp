@@ -2,6 +2,7 @@
 // Engine side of the LKD contract (src/lkd/include/lkd/lkd.h): FEXCore provides the CPU, LKD the Linux kernel.
 // Enabled with FEXDARWIN_LKD=1; the older built-in syscall table of DarwinSyscallHandler stays the default until LKD
 // can run the same witnesses.
+#include "CodeValidation.h"
 #include "DarwinSignalDelegator.h"
 #include "HitchLog.h"
 #include "GuestSignalAbi.h"
@@ -536,6 +537,7 @@ int ExecImage(lkd_task* t, const struct lkd_exec_image* Img) {
   auto* Th = T->State;
   // Nothing translated from the old image may run again.
   G->Signals->InvalidateGuestCodeRange(Th, 0, 1ULL << 47);
+  CodeValidation::Reset();
 
   LkdLoadRequest Req;
   Req.GuestPath = Img->guest_path;

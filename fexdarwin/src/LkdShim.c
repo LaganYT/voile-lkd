@@ -91,6 +91,9 @@ int fexdarwin_lkd_watch_code(uint64_t gva, uint64_t len) {
 int fexdarwin_lkd_code_write_fault(uint64_t gva) {
   return lkd_mm_code_write_fault(gva);
 }
+int fexdarwin_lkd_code_watched(uint64_t gva) {
+  return lkd_mm_code_watched(gva);
+}
 
 // procfs (src/lkd/src/procfs/lkd_procfs.h): /proc/cpuinfo and /sys cache files are rendered from the CPUID the guest
 // itself executes, which only the engine can answer. fexdarwin_cpuid is defined in LkdGlue.cpp.

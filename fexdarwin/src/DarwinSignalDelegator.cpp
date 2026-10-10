@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "DarwinSignalDelegator.h"
+#include "CodeValidation.h"
 #include "HitchLog.h"
 #include "LkdGlue.h"
 #include <FEXCore/Utils/GuestBase.h>
@@ -22,6 +23,7 @@ thread_local GuestThread* CurrentGuestThread = nullptr;
 
 extern "C" int fexdarwin_lkd_vma_at(uint64_t gva, uint64_t* start, uint64_t* end, uint32_t* prot);
 extern "C" int fexdarwin_lkd_code_write_fault(uint64_t gva);
+extern "C" int fexdarwin_lkd_code_watched(uint64_t gva);
 
 namespace {
 // Protection of the guest page holding Addr: negative when unmapped. In LKD mode the VMA table of LKD is the authority.
@@ -191,8 +193,19 @@ bool DarwinSignalDelegator::HandleSmcWrite(GuestThread* T, int Sig, siginfo_t* I
     // us to retry the store.
     HitchLog::Scope Timed(HitchLog::Kind::SmcFault);
     HitchLog::NoteSmcPage(Fault);
-    if (fexdarwin_lkd_code_write_fault(Fault) != 1) return false;
     PageBase = Fault & ~(FEXCore::Utils::FEX_HOST_PAGE_SIZE - 1);
+    // A page whose code keeps being rewritten leaves write tracking (CodeValidation.h): translations made from now on
+    // check their bytes, and this invalidation drops the ones made before the mark. LKD's own invalidation below is not
+    // enough: another thread may have unwatched the page in between, and a translation that started before the mark
+    // may end after it without watching the page.
+    if (fexdarwin_lkd_code_watched(Fault) && CodeValidation::NoteWriteFault(PageBase)) {
+      InvalidateGuestCodeRange(Th, PageBase, FEXCore::Utils::FEX_HOST_PAGE_SIZE);
+      if (HitchLog::Enabled() || G->Opt.TraceSignals) {
+        Say("[fexdarwin] pid %d: host page %#llx keeps being rewritten while its code runs; its translations now check their bytes\n",
+            static_cast<int>(getpid()), (unsigned long long)PageBase);
+      }
+    }
+    if (fexdarwin_lkd_code_write_fault(Fault) != 1) return false;
   } else {
     if (!G->Mem.IsSmcPage(Fault)) {
       return false;
