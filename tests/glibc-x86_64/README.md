@@ -12,3 +12,10 @@ Run:   `FEXDARWIN_LKD=1 FEXDARWIN_ROOT=<rootfs> FEXDARWIN_ROOT_RO=1 FEXDARWIN_BI
   named steamclient.so, from elsewhere, in a thread, after a fork). The script checks each host pid against `ps`
   while the witness waits: a live fexdarwin-run, with the expected macOS parent.
   `ROOT=<rootfs> ZIG=<zig> tests/glibc-x86_64/hostpid.sh`. Before the LKD change: no lkd_host_pid file. After: PASS.
+- w26_reaper: orphans and their new parent. Wine's double fork: the grandchild goes to the family's init, the
+  witness itself (getppid, its /proc/<pid>/status PPid read before it makes another syscall, the parent's comm, exe,
+  cmdline and status readable as EAC reads them, SIGCHLD and wait4 by the init). PR_SET_CHILD_SUBREAPER: orphans go
+  to the subreaper, which reaps one; its children do not inherit the flag. PR_SET_PDEATHSIG: the signal comes from
+  the dying parent (SI_USER, its pid), then again when the subreaper dies, and the witness reaps the orphan. Build
+  and run as above, with no argument (5 guest processes at most). With the fexdarwin-run of the -13-dev runtime:
+  8 failures (PPid of the dead middle process, getppid 1, parent unreadable, no SIGCHLD, no wait). After: W26 PASS.

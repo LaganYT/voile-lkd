@@ -221,3 +221,35 @@ Contexte : chemin ELDEN RING (Steam) sur le moteur Linux. Le `steamclient.so` Li
   - avec la bibliothèque : session complète (tuyau, utilisateur, licence, ticket chiffré `eResult=1`), 25 s stables, sortie 0 ;
   - sans la bibliothèque (témoin) : RST environ 2 s après la connexion, assertion fatale, sortie 1.
 - Pour Voile et Obelisk : livrer `guest/bin/steam-hostpid.so` dans le runtime Linux, et le précharger (`LD_PRELOAD`) dans l'invité du lanceur. Rapport : `sailover/build/experiments/eldenring-linux-20261010/reports/05-lkd-pid-hote.md`.
+
+## Orphelins : un parent vivant et lisible (2026-10-10, 10:50)
+
+Contexte : ELDEN RING sur le moteur Linux. Son bootstrapper EAC, lancé par `steam.exe`, finissait toujours en `208, 'Launch Error: 256'` (rapport sailover 07, § 4). EAC lit `getppid()` puis `/proc/<ppid>/{comm,exe,cmdline,status}` (digest EAC, H8). Or Wine crée chaque processus par un double fork (`ntdll/unix/process.c`, `spawn_process`) : le processus intermédiaire sort aussitôt et le processus créé devient orphelin.
+
+Ce que faisait LKD (MESURE, sonde `ppid-probe.sh` : `ping.exe` lancé par `cmd.exe`) :
+- sans sous-moissonneur, l'orphelin partait au pid 1. Aucune famille LKD n'a de pid 1 (les pids commencent à 2) : `getppid()` rendait 1, et `/proc/1` n'existait pas ;
+- `/proc/<pid>/status` faisait pire. Il montrait le processus intermédiaire mort (`ping.exe` : `PPid 51` ; `winedevice.exe`, `plugplay.exe`, `svchost.exe` : 12, 22, 28 ou 34), parce que procfs rendait la copie locale du ppid, que le processus ne relit que s'il appelle lui-même `getppid` ;
+- un parent dont le processus hôte meurt sans passer par sa sortie (SIGKILL hôte) gardait ses enfants : leur ppid restait sur lui.
+
+Correctif dans lkd (`task/wait.c`, `task/family.c`, `task/tasks.c`, `procfs/pid.c`), sur le modèle de `kernel/exit.c` v6.12 :
+- l'init de la famille est son premier processus enregistré sans parent dans la famille, celui que le moteur lance (chez Obelisk, le `sh` de `launch.sh`). Le registre garde son pid dans son en-tête (version 2). Comme le `child_reaper` d'un espace de pid Linux, il reçoit les orphelins qui n'ont aucun sous-moissonneur vivant parmi leurs ancêtres ;
+- `PR_SET_CHILD_SUBREAPER` et `PR_GET_CHILD_SUBREAPER` existaient déjà. Le sous-moissonneur garde la priorité, et l'indicateur ne passe pas aux enfants ;
+- l'orphelin prend SIGCHLD comme signal de sortie (`reparent_leader`). Un zombie reparenté est annoncé au nouveau parent, qui peut le récolter par `wait4` ;
+- le même reparentage a lieu quand le processus hôte d'un parent meurt sans sa sortie. Le signal de mort du parent part alors avec SI_USER et le pid du parent mort, comme `SEND_SIG_NOINFO` ;
+- `/proc/<pid>/status` et `stat` relisent ppid, pgid, sid et le signal de sortie dans le registre avant le rendu.
+
+Le premier processus ne devient pas le pid 1. Raisons :
+- EAC exige un parent vivant et lisible, pas le pid 1. Sur le PC Bazzite, le jeu a pour parent `pv-adverb`, un sous-moissonneur ; sous HyperLinux, un `dash` de pid 1 passait aussi le contrôle du parent (digest EAC, § 1.3 et H8) ;
+- Wine en pid 1 (PPid 0) donne précisément 256 sur un vrai noyau (`pid1-control`). Avec le premier processus numéroté 1, tout lancement où Wine est ce premier processus y serait exposé ;
+- un vrai pid 1 a aussi la protection `SIGNAL_UNKILLABLE`, l'exclusion de `kill(-1)`, et sa mort arrête tout l'espace de pid. LKD n'a aucune de ces règles : numéroter le premier processus 1 sans elles inventerait un init à moitié ;
+- le bootstrapper de Rocket League a déjà ce `sh` (pid 2) pour parent et passe en 301. Rien ne change pour lui ;
+- LKD ne donne pas le pid 1 par choix documenté (`first_pid` vaut 2 par défaut, statut task, point 1). `first_pid = 1` reste possible par configuration, et l'init de la famille est alors le pid 1.
+
+MESURE :
+- suite LKD : 42 programmes passent ; `test_sig_futex` dépasse son délai comme sur l'arbre intact, au même cas (`waitv`). `test_task_proc` compte 21 cas (260 assertions) et `test_procfs_other` 6 cas. Les cinq nouveaux cas échouent sans le correctif ;
+- témoin invité `w26_reaper` : 8 échecs avec le `fexdarwin-run` du runtime -13-dev, PASS avec le nouveau ;
+- sonde ppid : avant, `ping.exe ppid=51 parent_comm=UNREADABLE` ; après, `ppid=2 parent_comm=sh`, comme tous les processus de Wine ;
+- ELDEN RING, bootstrapper derrière `steam.exe` (`er-direct.sh` en mode B, runtime et préfixe copiés, `/opt/game` en lecture seule, binds Steam d'Obelisk) : avant, `208, 'Launch Error: 256'` 0,9 s après le début du mapping ; après, le mapping dure 89 s et finit en `210, 'Unexpected error. (#1)'`. C'est le verdict du lancement direct (mode A) du rapport 07, un autre chantier ;
+- Rocket League (`rl-direct.sh`) : `301, 'Easy Anti-Cheat successfully loaded in-game'` 0,39 s après le début du mapping.
+
+Reste ouvert : l'init de la famille n'a pas les règles propres au pid 1 (voir plus haut), et le premier processus garde `ppid` 1 sans `/proc/1`. Linux donnerait 0 pour un parent hors de l'espace de pid. Rapport : `sailover/build/experiments/eldenring-linux-20261010/reports/08-lkd-orphelins.md`.
