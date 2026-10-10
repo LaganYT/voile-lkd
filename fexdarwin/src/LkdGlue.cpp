@@ -12,6 +12,7 @@
 
 #include <FEXCore/Core/X86Enums.h>
 #include <FEXCore/Utils/GuestBase.h>
+#include <FEXCore/Utils/JITWriteScope.h>
 
 #include <cerrno>
 #include <csignal>
@@ -584,6 +585,10 @@ void ForkParent(lkd_task* t, pid_t) {
   G->ThreadsLock.unlock();
 }
 void ForkChild(lkd_task* t) {
+  // macOS starts the child's thread with the MAP_JIT write state this thread had at its last context switch, not the
+  // one it has now. Switched out inside a JITWriteScope and back in execute mode since, the thread forked a child that
+  // could not execute the dispatcher (SIGBUS on its first instruction, request wine-5, witness w33): set it again here.
+  pthread_jit_write_protect_np(FEXCore::Utils::JITWriteScope::IsOpen() ? 0 : 1);
   auto* T = GT(t);
   G->CTX->UnlockAfterFork(T->State, true);
   // task has already switched the identity: this host thread is now the only thread of the child process.
