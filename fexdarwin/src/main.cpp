@@ -211,16 +211,19 @@ int RunWithLkd(const Args& A, const HostOptions& Opt) {
   Cfg.guest_root = Root && *Root ? Root : "/";
   // A nonzero window base selects LKD's offset mode (guest address g at host lkd_guest_base + g); 0 would be the identity
   // mode of the unit tests. 8 TiB is the base all witnesses were qualified with.
-  // Guest window from the first free host address measured on macOS 27 (0x7d80000000) to the top of the arm64 user
-  // address space (0x7ffffe000000): guest addresses 0 .. 0x7f827e000000, close to the 2^47 of x86-64 Linux and Windows
-  // (the EAC bootstrapper maps fixed addresses at 0x7001'0000'0000 and up; a 2^46 window made it fail). Reserved with
-  // maximum protection none, it is one kernel map entry whatever its size (see src/lkd/src/mm/window.c).
-  // Host mappings placed by ASLR can reach into that range (MESURE: a 12.8 GiB PROT_NONE reservation at 0x7cb9400000 in
-  // some runs), so the base is the end of the highest occupied region below the top, rounded up to 1 GiB, and at least
-  // 0x7d80000000.
+  // Guest window from 1 TiB to the top of the arm64 user address space (0x7ffffe000000): guest addresses 0 ..
+  // 0x7efffe000000, close to the 2^47 of x86-64 Linux and Windows (the EAC bootstrapper maps fixed addresses at
+  // 0x7001'0000'0000 and up; a 2^46 window made it fail). Reserved with maximum protection none, it is one kernel map
+  // entry whatever its size (see src/lkd/src/mm/window.c).
+  // Everything of the host itself lives below the window: macOS 27 keeps [0xfc0000000, 0x7000000000) for itself
+  // (VM_MEMORY_GUARD), so the host has [0x7000000000, base). The first free address (0x7d80000000) left it 54 GiB, of
+  // which libmalloc reserves 12 or 24 GiB, and each guest thread takes about 280 MiB (FEXCore's lookup cache, call-ret
+  // stack, host stack): ELDEN RING's 110th thread found no room (MESURE 2026-10-10). From 1 TiB the host has 576 GiB,
+  // enough for LKD's 300 threads per process. Host mappings placed by ASLR can reach into the range, so the base is also
+  // past the end of the highest occupied region below the top, rounded up to 1 GiB.
   {
     constexpr uint64_t Top = 0x7fff'fe00'0000ULL;
-    uint64_t Base = 0x7d'8000'0000ULL;
+    uint64_t Base = 0x100'0000'0000ULL;
     mach_vm_address_t A = Base;
     for (;;) {
       mach_vm_size_t Sz = 0;
@@ -234,10 +237,14 @@ int RunWithLkd(const Args& A, const HostOptions& Opt) {
       Base = std::max<uint64_t>(Base, (A + Sz + (1ULL << 30) - 1) & ~((1ULL << 30) - 1));
       A += Sz;
     }
+    // FEXDARWIN_GUEST_BASE=<address> (diagnostics): the window from that address to the top instead.
+    if (const char* GB = getenv("FEXDARWIN_GUEST_BASE"); GB && *GB) {
+      const uint64_t Want = strtoull(GB, nullptr, 0);
+      if (Want && Want < Top) Base = Want;
+    }
     Cfg.guest_window_base = Base;
     Cfg.guest_window_bytes = Top - Base;
   }
-  if (const char* GB = getenv("FEXDARWIN_GUEST_BASE"); GB && *GB) Cfg.guest_window_base = strtoull(GB, nullptr, 0);
   if (int E = lkd_init_config(&Cfg); E != 0) { fprintf(stderr, "[fexdarwin] lkd_init_config failed %d\n", E); return 70; }
   if (int E = LkdSetup(); E != 0) { fprintf(stderr, "[fexdarwin] lkd_init failed %d\n", E); return 70; }
   // FEXDARWIN_ROOT_RO=1 keeps the guest root read-only (a shared reference tree); FEXDARWIN_BIND adds host directories
@@ -295,6 +302,7 @@ int RunWithLkd(const Args& A, const HostOptions& Opt) {
   fexdarwin_lkd_register_cpuid();
 
   GuestThread* Main = CreateGuestThread(nullptr);
+  if (!Main) { fprintf(stderr, "[fexdarwin] no host memory for the first guest thread\n"); return 70; }
   Main->Task = Task;
   Main->Tid = lkd_task_tid(Task);
   lkd_task_set_engine_data(Task, Main);
@@ -461,6 +469,7 @@ int main(int argc, char** argv) {
   const uint64_t Sp = BuildInitialStack(G->StackTop, Elf, A.GuestArgv, Envp, HwCap);
 
   GuestThread* Main = CreateGuestThread(nullptr);
+  if (!Main) { fprintf(stderr, "[fexdarwin] no host memory for the first guest thread\n"); return 70; }
   Main->StartRip = Elf.Entry;
   Main->StartRsp = Sp;
   Main->StartRax = 0;

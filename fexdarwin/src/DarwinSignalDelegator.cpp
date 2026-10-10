@@ -78,6 +78,12 @@ void DarwinSignalDelegator::RegisterThread(GuestThread* T) {
   CurrentGuestThread = T;
   T->HostAltStackSize = HostAltStackSize;
   T->HostAltStack = ::mmap(nullptr, HostAltStackSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+  if (T->HostAltStack == MAP_FAILED) {
+    // No host memory left: the handlers then run on the thread's own stack.
+    T->HostAltStack = nullptr;
+    fprintf(stderr, "[fexdarwin] no host memory for the signal stack of tid %d\n", T->Tid);
+    return;
+  }
   stack_t Ss {};
   Ss.ss_sp = T->HostAltStack;
   Ss.ss_size = HostAltStackSize;

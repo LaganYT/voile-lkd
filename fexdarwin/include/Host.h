@@ -102,7 +102,10 @@ inline uint32_t GuestEflags(FEXCore::Core::InternalThreadState* Th) {
 // ---- thread management (GuestThread.cpp) ----
 // Creates the FEXCore thread state for a new guest thread. The caller fills StartRip/StartRsp/... then calls RunGuestThread
 // on the host thread that will execute it.
+// Returns null when the host has no memory left for the thread.
 GuestThread* CreateGuestThread(GuestThread* Parent);
+// Frees a thread made by CreateGuestThread that never ran (its host thread could not be created).
+void DestroyGuestThread(GuestThread* T);
 // Executes the guest thread on the calling host thread until the guest exits it. Never returns for the main thread.
 void RunGuestThread(GuestThread* T);
 void ForEachThread(void (*Fn)(GuestThread*, void*), void* Arg);

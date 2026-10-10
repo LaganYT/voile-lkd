@@ -413,7 +413,9 @@ void* SpawnedThreadMain(void* P) {
 
 int SpawnThread(lkd_task* Child, const lkd_regs* Start) {
   GuestThread* Parent = CurrentGuestThread;
+  ReapDeadThreads(); // first: the threads that ended give their host memory back to this one
   auto* C = CreateGuestThread(Parent);
+  if (!C) return -LX_EAGAIN;
   C->Task = Child;
   C->Tid = lkd_task_tid(Child);
   lkd_task_set_engine_data(Child, C);
@@ -427,13 +429,18 @@ int SpawnThread(lkd_task* Child, const lkd_regs* Start) {
   C->StartRax = Start->rax;
   C->StartFsBase = Start->fs_base;
   St.gs_cached = Start->gs_base;
-  ReapDeadThreads();
   pthread_attr_t Attr;
   pthread_attr_init(&Attr);
   pthread_attr_setstacksize(&Attr, 8 << 20);
   const int E = pthread_create(&C->PThread, &Attr, SpawnedThreadMain, C);
   pthread_attr_destroy(&Attr);
-  return E == 0 ? 0 : -LX_EAGAIN;
+  if (E != 0) {
+    // LKD drops the task on this error: forget it and free what was made for it.
+    lkd_task_set_engine_data(Child, nullptr);
+    DestroyGuestThread(C);
+    return -LX_EAGAIN;
+  }
+  return 0;
 }
 
 void InvalidateCode(uint64_t Gva, uint64_t Len) {

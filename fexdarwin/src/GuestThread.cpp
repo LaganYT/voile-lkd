@@ -16,25 +16,33 @@ Host* G = nullptr;
 
 GuestThread* CreateGuestThread(GuestThread* Parent) {
   using FEXCore::Core::CPUState;
+  // Each thread reserves about 280 MiB of host address space (FEXCore's lookup cache, call-ret stack, host stack). When
+  // the host has none left, the thread is refused (clone gives EAGAIN, as Linux does without memory for a new task)
+  // instead of running with caches FEXCore could not allocate.
+  constexpr size_t Guard = FEXCore::Utils::FEX_HOST_PAGE_SIZE;
+  constexpr size_t Total = FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE + 2 * Guard;
+  void* Alloc = ::mmap(nullptr, Total, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
+  if (Alloc == MAP_FAILED) {
+    fprintf(stderr, "[fexdarwin] no host memory for the call-ret stack of a new thread: %s\n", strerror(errno));
+    return nullptr;
+  }
+  // A child copies the CPU state of its parent (clone semantics), the first thread starts from the reset state.
+  const CPUState* Init = Parent ? &Parent->State->CurrentFrame->State : nullptr;
+  auto* State = G->CTX->CreateThread(Init);
+  if (!State) {
+    fprintf(stderr, "[fexdarwin] no host address space for the FEXCore caches of a new thread\n");
+    ::munmap(Alloc, Total);
+    return nullptr;
+  }
   auto* T = new GuestThread();
   T->Tid = Parent ? ++G->NextTid + G->Pid : G->Pid;
   T->IsMain = Parent == nullptr;
-
-  // A child copies the CPU state of its parent (clone semantics), the first thread starts from the reset state.
-  const CPUState* Init = Parent ? &Parent->State->CurrentFrame->State : nullptr;
-  T->State = G->CTX->CreateThread(Init);
+  T->State = State;
   T->State->FrontendPtr = T;
   HitchLog::Attach(T->State);
   auto* Frame = T->State->CurrentFrame;
 
   // Call-ret shadow stack with a guard page on each side (the guard size is one *host* page: mprotect granularity).
-  constexpr size_t Guard = FEXCore::Utils::FEX_HOST_PAGE_SIZE;
-  constexpr size_t Total = FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE + 2 * Guard;
-  void* Alloc = ::mmap(nullptr, Total, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
-  if (Alloc == MAP_FAILED) {
-    fprintf(stderr, "[fexdarwin] cannot allocate the call-ret stack: %s\n", strerror(errno));
-    _exit(70);
-  }
   T->CallRetAlloc = Alloc;
   uint8_t* Base = static_cast<uint8_t*>(Alloc) + Guard;
   ::mprotect(Base, FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE, PROT_READ | PROT_WRITE);
@@ -65,6 +73,18 @@ GuestThread* CreateGuestThread(GuestThread* Parent) {
     G->Threads.push_back(T);
   }
   return T;
+}
+
+void DestroyGuestThread(GuestThread* T) {
+  {
+    std::lock_guard<std::mutex> lk(G->ThreadsLock);
+    std::erase(G->Threads, T);
+  }
+  G->CTX->DestroyThread(T->State);
+  if (T->CallRetAlloc) {
+    ::munmap(T->CallRetAlloc, FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE + 2 * FEXCore::Utils::FEX_HOST_PAGE_SIZE);
+  }
+  delete T;
 }
 
 void ForEachThread(void (*Fn)(GuestThread*, void*), void* Arg) {

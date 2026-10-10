@@ -257,6 +257,7 @@ int64_t CloneThread(GuestThread* T, const uint64_t A[6]) {
   }
   auto& Parent = T->State->CurrentFrame->State;
   auto* C = CreateGuestThread(T);
+  if (!C) return NegErr(L_EAGAIN);
   C->StartRip = Parent.rip + 2; // the child resumes after the syscall instruction
   C->StartRsp = A[1] ? A[1] : Parent.gregs[X::REG_RSP];
   C->StartRax = 0;
