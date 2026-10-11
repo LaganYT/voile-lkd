@@ -21,6 +21,7 @@ extern "C" {
 #include <mach/mach_vm.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <vector>
 
 extern "C" const struct mach_header_64 _mh_execute_header;
 extern "C" int fexdarwin_lkd_vma_describe_nowait(lkd_task* t, uint64_t gva, uint64_t* start, uint64_t* end, uint32_t* prot,
@@ -28,6 +29,8 @@ extern "C" int fexdarwin_lkd_vma_describe_nowait(lkd_task* t, uint64_t gva, uint
 extern "C" void fexdarwin_lkd_task_comm(lkd_task* t, char* out, unsigned long len);
 
 namespace {
+int OutFd = 2; // stderr, or the dump file while HostThreads writes
+
 void Put(const char* Fmt, ...) __attribute__((format(printf, 1, 2)));
 void Put(const char* Fmt, ...) {
   char Buf[768];
@@ -39,7 +42,7 @@ void Put(const char* Fmt, ...) {
   size_t Len = std::min<size_t>(N, sizeof Buf - 1);
   const char* P = Buf;
   while (Len) {
-    const ssize_t R = ::write(2, P, Len);
+    const ssize_t R = ::write(OutFd, P, Len);
     if (R <= 0) return;
     P += R;
     Len -= R;
@@ -238,6 +241,104 @@ void CrashReport::Host(ucontext_t* Uc, uint64_t FaultAddr, CodeRegionFn Region) 
     if (Pair[0] <= Fp) break;
     Fp = Pair[0];
   }
+}
+
+void CrashReport::HostThreads(int Fd, const ThreadLabel* Labels, size_t NLabels) {
+  constexpr int MaxFrames = 48;
+  constexpr uint64_t NoPac = 0x0000'7fff'ffff'ffffull;
+  struct Snap {
+    thread_t Port = MACH_PORT_NULL;
+    uint64_t Id = 0;
+    char Name[64] = "";
+    int RunState = 0;
+    bool Self = false, Got = false;
+    uint64_t Pc = 0, Lr = 0, Sp = 0;
+    uint64_t Ret[MaxFrames] {};
+    int NRet = 0;
+  };
+  const int SavedFd = OutFd;
+  OutFd = Fd;
+  const MainImage M = LoadMainImage();
+  thread_act_array_t List = nullptr;
+  mach_msg_type_number_t N = 0;
+  if (task_threads(mach_task_self(), &List, &N) != KERN_SUCCESS) {
+    Put("host threads: task_threads failed\n");
+    OutFd = SavedFd;
+    return;
+  }
+  std::vector<Snap> Snaps(N); // allocated before any thread is suspended: one may hold the malloc lock
+  const thread_t Me = mach_thread_self();
+  for (mach_msg_type_number_t I = 0; I < N; I++) {
+    Snap& S = Snaps[I];
+    S.Port = List[I];
+    thread_identifier_info_data_t Ident {};
+    mach_msg_type_number_t C = THREAD_IDENTIFIER_INFO_COUNT;
+    if (thread_info(S.Port, THREAD_IDENTIFIER_INFO, reinterpret_cast<thread_info_t>(&Ident), &C) == KERN_SUCCESS) S.Id = Ident.thread_id;
+    thread_extended_info_data_t Ext {};
+    C = THREAD_EXTENDED_INFO_COUNT;
+    if (thread_info(S.Port, THREAD_EXTENDED_INFO, reinterpret_cast<thread_info_t>(&Ext), &C) == KERN_SUCCESS) {
+      memcpy(S.Name, Ext.pth_name, std::min(sizeof S.Name, sizeof Ext.pth_name));
+      S.Name[sizeof S.Name - 1] = 0;
+      S.RunState = Ext.pth_run_state;
+    }
+    if (S.Port == Me) {
+      S.Self = true;
+      continue;
+    }
+    if (thread_suspend(S.Port) != KERN_SUCCESS) continue;
+    arm_thread_state64_t St {};
+    C = ARM_THREAD_STATE64_COUNT;
+    if (thread_get_state(S.Port, ARM_THREAD_STATE64, reinterpret_cast<thread_state_t>(&St), &C) == KERN_SUCCESS) {
+      S.Got = true;
+      S.Pc = St.__pc & NoPac;
+      S.Lr = St.__lr & NoPac;
+      S.Sp = St.__sp;
+      uint64_t Fp = St.__fp;
+      while (S.NRet < MaxFrames) {
+        uint64_t Pair[2];
+        if (!Fp || (Fp & 7) || !ReadHost(Fp, Pair, sizeof Pair)) break;
+        const uint64_t Ret = Pair[1] & NoPac;
+        if (!Ret) break;
+        S.Ret[S.NRet++] = Ret;
+        if (Pair[0] <= Fp) break;
+        Fp = Pair[0];
+      }
+    }
+    thread_resume(S.Port);
+  }
+  mach_port_deallocate(mach_task_self(), Me);
+
+  // Every thread runs again: symbols may now be looked up.
+  static const char* const States[] = {"?", "running", "stopped", "waiting", "uninterruptible", "halted"};
+  Put("host threads: %u (fexdarwin-run loaded at %#llx; atos -o fexdarwin-run -l %#llx ADDR)\n", N, (ull)M.Header, (ull)M.Header);
+  for (const Snap& S : Snaps) {
+    int32_t Tid = 0;
+    for (size_t L = 0; L < NLabels; L++) {
+      if (Labels[L].HostId == S.Id) Tid = Labels[L].Tid;
+    }
+    Put("\n-- host thread %#llx \"%s\" %s", (ull)S.Id, S.Name, States[S.RunState >= 1 && S.RunState <= 5 ? S.RunState : 0]);
+    if (Tid) Put(", guest tid %d", Tid);
+    Put("\n");
+    if (S.Self) {
+      Put("   (the thread writing this dump)\n");
+    } else if (!S.Got) {
+      Put("   (registers not readable)\n");
+    } else {
+      Put("   pc %#llx", (ull)S.Pc);
+      PutWhere(M, S.Pc, nullptr, true, false);
+      Put("\n   lr %#llx", (ull)S.Lr);
+      PutWhere(M, S.Lr, nullptr, true, true);
+      Put("\n   sp %#llx\n", (ull)S.Sp);
+      for (int I = 0; I < S.NRet; I++) {
+        Put("   #%-2d %#llx", I + 1, (ull)S.Ret[I]);
+        PutWhere(M, S.Ret[I], nullptr, true, true);
+        Put("\n");
+      }
+    }
+    mach_port_deallocate(mach_task_self(), S.Port);
+  }
+  vm_deallocate(mach_task_self(), reinterpret_cast<vm_address_t>(List), N * sizeof(thread_t));
+  OutFd = SavedFd;
 }
 
 void CrashReport::Guest(GuestThread* T) {

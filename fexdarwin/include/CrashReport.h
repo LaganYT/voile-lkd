@@ -3,11 +3,13 @@
 // offset, symbol, VM region, frame-pointer backtrace) and where the guest was (its module and offset at RIP, the system
 // call in progress, return addresses found on its stack), enough to name the faulting code with atos and objdump.
 //
-// Only the fatal paths of the signal handler call it: nothing runs or is allocated before a fatal fault. It never waits
+// Only the fatal paths of the signal handler call Host and Guest, and the thread dump calls HostThreads: nothing runs or
+// is allocated before a fatal fault. It never waits
 // for a lock the faulting thread may hold: guest memory is read with mach_vm_read_overwrite and the VMA table with a
 // try-lock. The dladdr fallback for addresses outside fexdarwin-run is the one exception (dyld's lock), printed last.
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <sys/ucontext.h>
 
@@ -24,4 +26,15 @@ void Host(ucontext_t* Uc, uint64_t FaultAddr, CodeRegionFn Region);
 // The guest side of the thread T: its system call if it is in one, the module and offset at its RIP, the code bytes
 // around RIP and the return addresses found on its stack.
 void Guest(GuestThread* T);
+
+// Guest tid of a host thread (pthread_threadid_np), to label the threads of HostThreads.
+struct ThreadLabel {
+  uint64_t HostId;
+  int32_t Tid;
+};
+
+// Thread dump: name, state and frame-pointer backtrace of every host thread of this process, written to Fd. Each
+// thread is suspended only while its registers and frame chain are copied, and every one runs again before any symbol
+// is looked up (dladdr takes dyld's lock), so a process whose threads hold engine locks forever can still be read.
+void HostThreads(int Fd, const ThreadLabel* Labels, size_t NLabels);
 } // namespace CrashReport

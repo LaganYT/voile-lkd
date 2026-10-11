@@ -3,6 +3,7 @@
 // Enabled with FEXDARWIN_LKD=1; the older built-in syscall table of DarwinSyscallHandler stays the default until LKD
 // can run the same witnesses.
 #include "CodeValidation.h"
+#include "CrashReport.h"
 #include "DarwinSignalDelegator.h"
 #include "HitchLog.h"
 #include "GuestSignalAbi.h"
@@ -240,11 +241,13 @@ uint64_t CountOwnRegions(uint64_t Limit) {
 
 // ---- thread dump (diagnostics) ----
 // FEXDARWIN_DUMP_DIR=<host dir>: when <dir>/dump-request appears or changes, every guest process of the family writes
-// <dir>/dump-<host pid>-<n>.txt: per guest thread its tid, the system call it is in (number and arguments) or "running",
-// its registers and the stack words that point into executable mappings (module name and offset). Read-only for the
-// guest: memory is read with mach_vm_read_overwrite (no fault), nothing is changed, nothing is sent to the guest.
-extern "C" int fexdarwin_lkd_vma_describe(lkd_task* t, uint64_t gva, uint64_t* start, uint64_t* end, uint32_t* prot,
-                                          uint64_t* off, char* name, unsigned long name_len);
+// <dir>/dump-<host pid>-<n>.txt: first the backtrace of every host thread (CrashReport::HostThreads), then per guest
+// thread its tid, the system call it is in (number and arguments) or "running", its registers and the stack words that
+// point into executable mappings (module name and offset). Read-only for the guest: memory is read with
+// mach_vm_read_overwrite (no fault), nothing is changed, nothing is sent to the guest. It never waits for a lock: a
+// process frozen by an engine lock held forever (ELDEN RING's world loading) still writes its dump.
+extern "C" int fexdarwin_lkd_vma_describe_nowait(lkd_task* t, uint64_t gva, uint64_t* start, uint64_t* end, uint32_t* prot,
+                                                 uint64_t* off, char* name, unsigned long name_len);
 
 static bool ReadGuest(uint64_t Gva, void* Out, size_t Len) {
   mach_vm_size_t Got = 0;
@@ -256,21 +259,46 @@ static void DescribeCode(FILE* F, lkd_task* Task, uint64_t V) {
   uint64_t S, E, Off;
   uint32_t Prot;
   char Name[256];
-  if (fexdarwin_lkd_vma_describe(Task, V, &S, &E, &Prot, &Off, Name, sizeof Name) != 0) {
-    fprintf(F, "%#llx ?", (unsigned long long)V);
+  if (const int R = fexdarwin_lkd_vma_describe_nowait(Task, V, &S, &E, &Prot, &Off, Name, sizeof Name); R != 0) {
+    fprintf(F, "%#llx ? (%d)", (unsigned long long)V, R);
     return;
   }
   fprintf(F, "%#llx %s+%#llx (vma %#llx%s)", (unsigned long long)V, Name[0] ? Name : "[anon]", (unsigned long long)(V - S + Off),
           (unsigned long long)S, (Prot & 4) ? " x" : "");
 }
 
+// ThreadsLock within about a second, or false.
+static bool TryLockThreads() {
+  for (int I = 0; I < 100; I++) {
+    if (G->ThreadsLock.try_lock()) return true;
+    usleep(10 * 1000);
+  }
+  return false;
+}
+
 static void DumpThreads(const char* Dir, unsigned Seq) {
   char Path[1024];
   snprintf(Path, sizeof Path, "%s/dump-%d-%u.txt", Dir, static_cast<int>(getpid()), Seq);
-  FILE* F = fopen(Path, "w");
+  FILE* F = fopen(Path, "a"); // appends: HostThreads writes to the same file through its descriptor
   if (!F) return;
-  std::lock_guard<std::mutex> Lk(G->ThreadsLock);
-  fprintf(F, "pid %d (guest %d), %zu guest threads\n", static_cast<int>(getpid()), G->Pid, G->Threads.size());
+  std::vector<CrashReport::ThreadLabel> Labels;
+  const bool Listed = TryLockThreads();
+  if (Listed) {
+    for (GuestThread* T : G->Threads) {
+      uint64_t Id = 0;
+      if (T->PThread && pthread_threadid_np(T->PThread, &Id) == 0) Labels.push_back({Id, T->Tid});
+    }
+    G->ThreadsLock.unlock();
+  }
+  fprintf(F, "pid %d (guest %d)%s\n\n", static_cast<int>(getpid()), G->Pid, Listed ? "" : ", ThreadsLock busy for 1 s");
+  fflush(F);
+  CrashReport::HostThreads(fileno(F), Labels.data(), Labels.size());
+  if (!TryLockThreads()) {
+    fprintf(F, "\nguest threads not listed: ThreadsLock busy for 1 s\n");
+    fclose(F);
+    return;
+  }
+  fprintf(F, "\n%zu guest threads\n", G->Threads.size());
   for (GuestThread* T : G->Threads) {
     if (!T->State || !T->State->CurrentFrame) continue;
     const auto& St = T->State->CurrentFrame->State;
@@ -297,7 +325,7 @@ static void DumpThreads(const char* Dir, unsigned Seq) {
     uint64_t S, E, Off;
     uint32_t Prot;
     char Name[256];
-    if (fexdarwin_lkd_vma_describe(T->Task, Rsp, &S, &E, &Prot, &Off, Name, sizeof Name) != 0) continue;
+    if (fexdarwin_lkd_vma_describe_nowait(T->Task, Rsp, &S, &E, &Prot, &Off, Name, sizeof Name) != 0) continue;
     uint64_t End = E < Rsp + 64 * 1024 ? E : Rsp + 64 * 1024;
     static uint64_t Buf[8192];
     const size_t Len = static_cast<size_t>((End - (Rsp & ~7ull)) & ~7ull);
@@ -309,13 +337,14 @@ static void DumpThreads(const char* Dir, unsigned Seq) {
       uint64_t VS, VE, VO;
       uint32_t VP;
       char VN[2];
-      if (fexdarwin_lkd_vma_describe(T->Task, V, &VS, &VE, &VP, &VO, VN, sizeof VN) != 0 || !(VP & 4)) continue;
+      if (fexdarwin_lkd_vma_describe_nowait(T->Task, V, &VS, &VE, &VP, &VO, VN, sizeof VN) != 0 || !(VP & 4)) continue;
       fprintf(F, "   [rsp+%#zx] ", I * 8);
       DescribeCode(F, T->Task, V);
       fputc('\n', F);
       Hits++;
     }
   }
+  G->ThreadsLock.unlock();
   fclose(F);
 }
 
