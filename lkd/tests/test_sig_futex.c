@@ -331,10 +331,15 @@ LT_TEST(waitv)
     v[1].val = 3;
     LT_ERRNO(sc(g_main, LKD_NR_futex_waitv, P(v), 2, 0, 0, 0, 0), LX_EAGAIN);
     v[1].val = 2;
-    clock_gettime(CLOCK_MONOTONIC_RAW, &now);
-    struct lx_timespec soon = { now.tv_sec, now.tv_nsec + 20000000 };
-    if (soon.tv_nsec >= 1000000000) { soon.tv_sec++; soon.tv_nsec -= 1000000000; }
+    /* the deadline is on the guest CLOCK_MONOTONIC (Darwin CLOCK_UPTIME_RAW, stopped during sleep), as in
+     * bitset_and_absolute_timeouts: the host CLOCK_MONOTONIC_RAW counts sleep and was 36 minutes ahead on a Mac
+     * that had slept, so this wait outlived the test's timeout */
+    int64_t gm = lkd_guest_clock_ns(LX_CLOCK_MONOTONIC) + 20000000;
+    struct lx_timespec soon = { gm / 1000000000, gm % 1000000000 };
+    int64_t t0 = lkd_host_mono_ns();
     LT_ERRNO(sc(g_main, LKD_NR_futex_waitv, P(v), 2, 0, P(&soon), LX_CLOCK_MONOTONIC, 0), LX_ETIMEDOUT);
+    LT_CHECK(lkd_host_mono_ns() - t0 >= 15000000);
+    LT_CHECK(lkd_host_mono_ns() - t0 < 1000000000);
 }
 
 struct wv_thread { lkd_task *t; struct lx_futex_waitv *v; int n; int64_t ret; _Atomic int done; };
