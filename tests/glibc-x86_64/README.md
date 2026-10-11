@@ -65,3 +65,10 @@ Run:   `FEXDARWIN_LKD=1 FEXDARWIN_ROOT=<rootfs> FEXDARWIN_ROOT_RO=1 FEXDARWIN_BI
   load the machine), then forks a child that exits at once. Arguments: rounds, call sites, spinner threads. With the
   fexdarwin-run of 8ddfed2: 15 of 600 children died (`FATAL unhandled fault: signal 10`, pc in the dispatcher, esr
   0x8200000f), about 35 s. After: W33 PASS.
+- w34_vlocksig: 16 threads copy small results to guest memory as fast as they can (clock_gettime and getrusage, a VMA
+  lookup each), 4 threads map and unmap private and shared memory, and a thread sends SIGUSR1 to the copying threads
+  (Wine's thread suspension). Arguments: seconds, then `nosig`, `sigidle` (signals to a sleeping thread only) or
+  `sigmap` (to the mapping threads only). With fexdarwin-run built from 76bcea8: frozen within a second whenever the
+  signalled threads use the VMA lock (every thread waiting on mm->vlock, a writer queued, no holder: macOS 27's
+  pthread_rwlock, fact G1); `nosig` and `sigidle` pass. After (mm_rwlock): W34 PASS, 3 runs out of 3, 91 to 99
+  million copies in 20 s instead of 27 million without signals before.

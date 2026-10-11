@@ -160,10 +160,10 @@ static lkd_mm *cur_mm(void)
 static int wanted_prot(lkd_mm *mm, uint64_t p)
 {
     int h = PROT_NONE;
-    pthread_rwlock_rdlock(&mm->vlock);
+    mrw_rdlock(&mm->vlock);
     for (mm_vma *v = vt_first_end_after(&mm->vt, p); v && v->start < p + mm_hps; v = vt_next(&mm->vt, v))
         h |= mm_host_prot_of(v->prot);
-    pthread_rwlock_unlock(&mm->vlock);
+    mrw_rdunlock(&mm->vlock);
     if (mm_watched(p)) h &= ~PROT_WRITE;
     return h;
 }
@@ -182,11 +182,11 @@ static uint64_t host_off_of(const mm_vma *v, uint64_t p) { return v->pgoff + v->
 int mm_alias_pages(lkd_mm *mm, uint64_t p, uint64_t *out, int cap)
 {
     int n = 0;
-    pthread_rwlock_rdlock(&mm->vlock);
+    mrw_rdlock(&mm->vlock);
     mm_vma *v = vt_first_end_after(&mm->vt, p);
     while (v && v->start < p + mm_hps && !(v->vflags & VF_HOSTSHARED)) v = vt_next(&mm->vt, v);
     if (!v || v->start >= p + mm_hps || !v->bk) {
-        pthread_rwlock_unlock(&mm->vlock);
+        mrw_rdunlock(&mm->vlock);
         if (cap > 0) out[n++] = p;
         return n;
     }
@@ -200,7 +200,7 @@ int mm_alias_pages(lkd_mm *mm, uint64_t p, uint64_t *out, int cap)
         for (int i = 0; i < n; i++) if (out[i] == q) dup = 1;
         if (!dup) out[n++] = q;
     }
-    pthread_rwlock_unlock(&mm->vlock);
+    mrw_rdunlock(&mm->vlock);
     if (n == 0 && cap > 0) out[n++] = p;
     return n;
 }
@@ -246,7 +246,7 @@ void mm_watch_alias_sync(lkd_mm *mm, uint64_t s, uint64_t e)
     if (ie < e) alias_sync_page(mm, ie);
     struct { uint64_t lo, hi; int64_t d; } sh[MAX_VIEWS];
     int n = 0, slow = 0;
-    pthread_rwlock_rdlock(&mm->vlock);
+    mrw_rdlock(&mm->vlock);
     mm_vma *nv = vt_first_end_after(&mm->vt, is);
     if (!nv || nv->start > is || nv->end < ie || !(nv->vflags & VF_HOSTSHARED) || !nv->bk) {
         slow = 1;
@@ -265,7 +265,7 @@ void mm_watch_alias_sync(lkd_mm *mm, uint64_t s, uint64_t e)
             n++;
         }
     }
-    pthread_rwlock_unlock(&mm->vlock);
+    mrw_rdunlock(&mm->vlock);
     if (slow) {
         for (uint64_t p = is; p < ie; p += mm_hps) alias_sync_page(mm, p);
     } else {
@@ -324,10 +324,10 @@ int mm_unwatch_for_write(lkd_mm *mm, uint64_t gva, int need_vma_write, struct mm
 {
     uint64_t p = HP_DOWN(gva);
     if (need_vma_write) {
-        pthread_rwlock_rdlock(&mm->vlock);
+        mrw_rdlock(&mm->vlock);
         mm_vma *v = vt_find(&mm->vt, gva);
         int ok = v && (v->prot & LX_PROT_WRITE);
-        pthread_rwlock_unlock(&mm->vlock);
+        mrw_rdunlock(&mm->vlock);
         if (!ok) return 0;
     }
     uint64_t al[MAX_ALIASES];
@@ -403,7 +403,7 @@ void lkd_mm_file_written(struct lkd_fdobj *file, uint64_t off, uint64_t len)
     if (!mm || !wbits || !file || !len) return;
     uint64_t pages[64];
     int n = 0;
-    pthread_rwlock_rdlock(&mm->vlock);
+    mrw_rdlock(&mm->vlock);
     for (mm_vma *v = vt_first(&mm->vt); v && n < 64; v = vt_next(&mm->vt, v)) {
         if (!(v->vflags & VF_HOSTSHARED) || !v->bk || v->bk->kind != MB_FILE || !v->bk->file) continue;
         lkd_fdobj *f = v->bk->file;
@@ -414,7 +414,7 @@ void lkd_mm_file_written(struct lkd_fdobj *file, uint64_t off, uint64_t len)
         for (uint64_t g = HP_DOWN(v->start + (a - vs)); g < v->start + (b - vs) && n < 64; g += mm_hps)
             if (mm_watched(g)) pages[n++] = g;
     }
-    pthread_rwlock_unlock(&mm->vlock);
+    mrw_rdunlock(&mm->vlock);
     for (int i = 0; i < n; i++) mm_unwatch_for_write(mm, pages[i], 0, NULL);
     for (int i = 0; i < n; i++) {
         mm_watch_lock();

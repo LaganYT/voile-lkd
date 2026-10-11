@@ -16,8 +16,8 @@ static uint64_t new_identity(void) { return ((uint64_t)getpid() << 24) | (atomic
 
 void mm_lock(lkd_mm *mm) { pthread_mutex_lock(&mm->lock); }
 void mm_unlock(lkd_mm *mm) { pthread_mutex_unlock(&mm->lock); }
-void mm_wlock(lkd_mm *mm) { pthread_rwlock_wrlock(&mm->vlock); }
-void mm_wunlock(lkd_mm *mm) { pthread_rwlock_unlock(&mm->vlock); }
+void mm_wlock(lkd_mm *mm) { mrw_wrlock(&mm->vlock); }
+void mm_wunlock(lkd_mm *mm) { mrw_wrunlock(&mm->vlock); }
 lkd_mm *mm_of(lkd_task *t) { return t ? t->mm : NULL; }
 
 int mm_capable(lkd_task *t, int cap)
@@ -127,7 +127,7 @@ lkd_mm *lkd_mm_create(void)
     if (!mm) { errno = ENOMEM; return NULL; }
     atomic_init(&mm->refs, 1);
     pthread_mutex_init(&mm->lock, NULL);
-    pthread_rwlock_init(&mm->vlock, NULL);
+    atomic_init(&mm->vlock.w, 0);
     vt_init(&mm->vt, mm_win.g_lo);
     mm->identity = new_identity();
     mm->mmap_base = default_mmap_base();
@@ -153,7 +153,6 @@ static void mm_destroy(lkd_mm *mm)
         mm_remote_stop();
         mm_win.owner = NULL;
     }
-    pthread_rwlock_destroy(&mm->vlock);
     pthread_mutex_destroy(&mm->lock);
     free(mm);
 }
@@ -882,7 +881,7 @@ int mm_check_range_mm(lkd_mm *mm, uint64_t gva, uint64_t len, int need_write, in
     uint64_t end = gva + len;
     if (end < gva) return -LX_EFAULT;
     int r = 0;
-    pthread_rwlock_rdlock(&mm->vlock);
+    mrw_rdlock(&mm->vlock);
     uint64_t cur = gva;
     while (cur < end) {
         mm_vma *v = vt_find(&mm->vt, cur);
@@ -895,7 +894,7 @@ int mm_check_range_mm(lkd_mm *mm, uint64_t gva, uint64_t len, int need_write, in
         }
         cur = v->end;
     }
-    pthread_rwlock_unlock(&mm->vlock);
+    mrw_rdunlock(&mm->vlock);
     return r;
 }
 
@@ -958,20 +957,20 @@ static void fill_info(const lkd_mm *mm, const mm_vma *v, struct lkd_vma_info *o)
 int lkd_mm_find(lkd_mm *mm, uint64_t addr, int next, struct lkd_vma_info *out)
 {
     if (!mm) return -LX_ENOENT;
-    pthread_rwlock_rdlock(&mm->vlock);
+    mrw_rdlock(&mm->vlock);
     mm_vma *v = next ? vt_first_end_after(&mm->vt, addr) : vt_find(&mm->vt, addr);
     if (v) fill_info(mm, v, out);
-    pthread_rwlock_unlock(&mm->vlock);
+    mrw_rdunlock(&mm->vlock);
     return v ? 0 : -LX_ENOENT;
 }
 
 int lkd_mm_find_nowait(lkd_mm *mm, uint64_t addr, struct lkd_vma_info *out)
 {
     if (!mm) return -LX_ENOENT;
-    if (pthread_rwlock_tryrdlock(&mm->vlock) != 0) return -LX_EBUSY;
+    if (mrw_tryrdlock(&mm->vlock) != 0) return -LX_EBUSY;
     mm_vma *v = vt_find(&mm->vt, addr);
     if (v) fill_info(mm, v, out);
-    pthread_rwlock_unlock(&mm->vlock);
+    mrw_rdunlock(&mm->vlock);
     return v ? 0 : -LX_ENOENT;
 }
 
@@ -998,12 +997,12 @@ int lkd_mm_has_writable_shared_mapping(lkd_mm *mm, struct lkd_fdobj *file)
         have_id = 1;
     }
     int found = 0;
-    pthread_rwlock_rdlock(&mm->vlock);
+    mrw_rdlock(&mm->vlock);
     for (mm_vma *v = vt_first(&mm->vt); v && !found; v = vt_next(&mm->vt, v))
         if (v->bk && (v->vflags & VF_SHARED) && (v->vflags & VF_MAYWRITE) &&
             same_file(v->bk, file, probe.ino, probe.dev_major, probe.dev_minor, have_id))
             found = 1;
-    pthread_rwlock_unlock(&mm->vlock);
+    mrw_rdunlock(&mm->vlock);
     return found;
 }
 
@@ -1124,12 +1123,12 @@ char *lkd_mm_render_maps(lkd_mm *mm, size_t *len_out)
     sb_need(&b, 0);
     struct lkd_vma_info *o = malloc(sizeof *o);
     if (!o) { free(b.p); return NULL; }
-    pthread_rwlock_rdlock(&mm->vlock);
+    mrw_rdlock(&mm->vlock);
     for (mm_vma *v = vt_first(&mm->vt); v && !b.oom; v = vt_next(&mm->vt, v)) {
         fill_info(mm, v, o);
         render_line(&b, o);
     }
-    pthread_rwlock_unlock(&mm->vlock);
+    mrw_rdunlock(&mm->vlock);
     free(o);
     if (b.oom) { free(b.p); return NULL; }
     if (len_out) *len_out = b.n;
@@ -1341,7 +1340,7 @@ int lkd_mm_futex_key(lkd_task *t, uint64_t gva, int private_hint, struct lkd_fut
         return 0;
     }
     int r = 0;
-    pthread_rwlock_rdlock(&mm->vlock);
+    mrw_rdlock(&mm->vlock);
     mm_vma *v = vt_find(&mm->vt, gva);
     if (!v) r = -LX_EFAULT;
     else if ((v->vflags & VF_SHARED) && v->bk) {
@@ -1361,7 +1360,7 @@ int lkd_mm_futex_key(lkd_task *t, uint64_t gva, int private_hint, struct lkd_fut
         key->a = mm->identity;
         key->b = gva;
     }
-    pthread_rwlock_unlock(&mm->vlock);
+    mrw_rdunlock(&mm->vlock);
     return r;
 }
 
@@ -1393,7 +1392,7 @@ void lkd_mm_fork_prepare(lkd_task *t, uint64_t clone_flags)
     if (!mm) return;
     mm_lock(mm);
     mm_watch_lock();
-    pthread_rwlock_wrlock(&mm->vlock);
+    mrw_wrlock(&mm->vlock);
 }
 
 void lkd_mm_fork_parent(lkd_task *t, pid_t host_child)
@@ -1401,7 +1400,7 @@ void lkd_mm_fork_parent(lkd_task *t, pid_t host_child)
     (void)host_child;
     lkd_mm *mm = mm_of(t);
     if (!mm) return;
-    pthread_rwlock_unlock(&mm->vlock);
+    mrw_wrunlock(&mm->vlock);
     mm_watch_unlock();
     mm_unlock(mm);
 }
@@ -1417,9 +1416,10 @@ void lkd_mm_fork_child(lkd_task *t)
      * rebuilt, never unlocked. A thread of the parent that was waiting for one of them at fork time (a
      * JIT thread in lkd_mm_code_write_fault waiting for the VMA lock) leaves kernel wait state in the
      * lock word, and the child's unlock or next lock then blocks for ever (MESURE: w18_forkjit, child in
-     * mm_wlock). lkd_fork_reinit_* zero the memory first (pthread_rwlock_init on a held lock is EBUSY). */
+     * mm_wlock). lkd_fork_reinit_mutex zeroes the memory first (pthread_mutex_init on a held lock is EBUSY);
+     * the VMA lock is one word: its waiters' counts go with their threads. */
     mm_watch_fork_child();
-    lkd_fork_reinit_rwlock(&mm->vlock);
+    atomic_store(&mm->vlock.w, 0);
     lkd_fork_reinit_mutex(&mm->lock, 0);
     atomic_store(&mm->refs, 1);
     mm->identity = new_identity();

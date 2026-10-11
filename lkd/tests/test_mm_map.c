@@ -380,9 +380,9 @@ LT_TEST(find_nowait)
     LT_EQ(vn.prot, vi.prot);
     LT_ERRNO(lkd_mm_find_nowait(T->mm, a + 8192 + 0x100000, &vn), LX_ENOENT);
     LT_ERRNO(lkd_mm_find_nowait(NULL, a, &vn), LX_ENOENT);
-    pthread_rwlock_wrlock(&T->mm->vlock); /* a writer holds the table */
+    mrw_wrlock(&T->mm->vlock); /* a writer holds the table */
     LT_ERRNO(lkd_mm_find_nowait(T->mm, a + 4096, &vn), LX_EBUSY);
-    pthread_rwlock_unlock(&T->mm->vlock);
+    mrw_wrunlock(&T->mm->vlock);
     LT_EQ(lkd_mm_find_nowait(T->mm, a + 4096, &vn), 0);
     down();
 }

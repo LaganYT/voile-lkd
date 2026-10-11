@@ -180,7 +180,21 @@ Déduit : l'état propre au fil n'est sauvegardé qu'au changement de contexte (
 
 ## G. Synchronisation et événements
 
-a completer
+### G1. `pthread_rwlock` et signaux (`g1_rwlock_signals`, 2026-10-11, gel d'ELDEN RING)
+
+Mesuré sur macOS 27.0.1 (26A434), Apple M5 Max. 5 PASS, 0 FAIL. 16 fils lisent sous le verrou en boucle, 4 fils écrivent, et le fil principal envoie SIGUSR2 à l'un d'eux toutes les 500 µs, gestionnaire vide (comme le kick de fexdarwin). Chaque cas tourne 6 s dans son propre enfant.
+
+| Cas | Résultat |
+| --- | --- |
+| `pthread_rwlock_t`, sans signal | 4 002 861 lectures, 352 303 écritures en 6 s |
+| `pthread_rwlock_t`, signaux, gestionnaire sans `SA_RESTART` | gelé à 4 s (10 742 lectures, 1 108 écritures) : plus aucun fil n'avance |
+| `pthread_rwlock_t`, signaux, `SA_RESTART` | gelé à 4 s aussi |
+| `pthread_mutex_t`, mêmes signaux | 110 173 189 prises en 6 s, aucun gel |
+| verrou d'un mot sur `os_sync_wait_on_address` (le `mm_rwlock` de LKD), mêmes signaux | 157 165 201 lectures, 458 839 écritures en 6 s, aucun gel |
+
+`std::shared_mutex` de la libc++ (mutex et variables de condition, pas `pthread_rwlock`) ne gèle pas non plus : 63 millions de prises partagées et 274 313 exclusives en 10 s sous 20 000 signaux (test ponctuel hors suite).
+
+Déduit : un `pthread_rwlock` dont les fils en attente reçoivent des signaux finit par ne plus réveiller personne. Tous les fils restent dans `__psynch_rw_rdlock` ou `__psynch_rw_wrlock` sans qu'aucun ne tienne le verrou. Le gel ne demande ni fork ni appel système particulier, seulement des signaux qui tombent sur des fils en attente. Conséquence pour un moteur qui interrompt ses fils par signal : aucun `pthread_rwlock` sur un chemin que ces fils empruntent. Un mot atomique et `os_sync_wait_on_address`, qui relit l'état à chaque réveil, n'a pas ce défaut, et il est en plus 39 fois plus rapide ici.
 
 ## Implications for a Linux kernel emulation on Darwin
 

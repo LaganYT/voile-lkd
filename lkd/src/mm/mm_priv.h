@@ -20,6 +20,9 @@
 #ifndef LKD_MM_PRIV_H
 #define LKD_MM_PRIV_H
 
+#include <os/os_sync_wait_on_address.h>
+#include <stdatomic.h>
+
 #include "lkd_internal.h"
 #include "mm.h"
 #include "fd.h"
@@ -123,10 +126,74 @@ uint64_t vt_search(const vtree *t, uint64_t len, uint64_t low, uint64_t high, ui
 
 #define MM_RSS_TTL_NS 100000000ll   /* lkd_mm_stats RSS cache validity: 100 ms */
 
+/* The VMA leaf lock. Not a pthread_rwlock: on macOS 27.0.1 a pthread_rwlock whose waiting threads take signals
+ * stops waking them for good (a native test with 16 readers, 4 writers and empty signal handlers freezes within
+ * seconds, with or without SA_RESTART), and every guest thread takes the engine's kick signal. ELDEN RING's world
+ * loading froze that way (witness w34_vlocksig). One word: readers in bits 0-15, waiting writers in bits 16-30, the
+ * writer in bit 31. A waiter sleeps on the word and reads it again whenever it wakes, for whatever reason. Writers
+ * go first: no reader enters while a writer waits. Not recursive. */
+typedef struct { _Atomic uint32_t w; } mm_rwlock;
+#define MRW_READERS 0x0000ffffu
+#define MRW_WAITER  0x00010000u
+#define MRW_WAITERS 0x7fff0000u
+#define MRW_WRITER  0x80000000u
+
+static inline void mrw_rdlock(mm_rwlock *l)
+{
+    uint32_t s = atomic_load_explicit(&l->w, memory_order_relaxed);
+    for (;;) {
+        if (!(s & (MRW_WRITER | MRW_WAITERS))) {
+            if (atomic_compare_exchange_weak_explicit(&l->w, &s, s + 1, memory_order_acquire, memory_order_relaxed)) return;
+            continue;
+        }
+        (void)os_sync_wait_on_address(&l->w, s, sizeof l->w, OS_SYNC_WAIT_ON_ADDRESS_NONE);
+        s = atomic_load_explicit(&l->w, memory_order_relaxed);
+    }
+}
+
+static inline int mrw_tryrdlock(mm_rwlock *l)
+{
+    uint32_t s = atomic_load_explicit(&l->w, memory_order_relaxed);
+    while (!(s & (MRW_WRITER | MRW_WAITERS)))
+        if (atomic_compare_exchange_weak_explicit(&l->w, &s, s + 1, memory_order_acquire, memory_order_relaxed)) return 0;
+    return -1;
+}
+
+static inline void mrw_rdunlock(mm_rwlock *l)
+{
+    uint32_t s = atomic_fetch_sub_explicit(&l->w, 1, memory_order_release) - 1;
+    if (!(s & MRW_READERS) && (s & MRW_WAITERS))
+        (void)os_sync_wake_by_address_all(&l->w, sizeof l->w, OS_SYNC_WAKE_BY_ADDRESS_NONE);
+}
+
+static inline void mrw_wrlock(mm_rwlock *l)
+{
+    uint32_t s = 0;
+    if (atomic_compare_exchange_strong_explicit(&l->w, &s, MRW_WRITER, memory_order_acquire, memory_order_relaxed)) return;
+    s = atomic_fetch_add_explicit(&l->w, MRW_WAITER, memory_order_relaxed) + MRW_WAITER;
+    for (;;) {
+        if (!(s & (MRW_WRITER | MRW_READERS))) {
+            if (atomic_compare_exchange_weak_explicit(&l->w, &s, (s - MRW_WAITER) | MRW_WRITER, memory_order_acquire,
+                                                      memory_order_relaxed))
+                return;
+            continue;
+        }
+        (void)os_sync_wait_on_address(&l->w, s, sizeof l->w, OS_SYNC_WAIT_ON_ADDRESS_NONE);
+        s = atomic_load_explicit(&l->w, memory_order_relaxed);
+    }
+}
+
+/* Waiting readers leave no trace in the word: always wake. Writes (map changes) are rare next to reads. */
+static inline void mrw_wrunlock(mm_rwlock *l)
+{
+    atomic_fetch_and_explicit(&l->w, ~MRW_WRITER, memory_order_release);
+    (void)os_sync_wake_by_address_all(&l->w, sizeof l->w, OS_SYNC_WAKE_BY_ADDRESS_NONE);
+}
+
 struct lkd_mm {
     _Atomic int refs;
     pthread_mutex_t lock;        /* mmap_lock, LKD_RANK_MM */
-    pthread_rwlock_t vlock;      /* VMA leaf lock, LKD_RANK_VMA: tree readers vs writers */
+    mm_rwlock vlock;             /* VMA leaf lock, LKD_RANK_VMA: tree readers vs writers */
     vtree vt;
     uint64_t identity;
     uint64_t start_brk, brk;     /* guest; 0 = unknown (brk then fails like an absent heap) */
