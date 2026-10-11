@@ -146,7 +146,17 @@ int main(int argc, char **argv)
     int r[9];
     int n = recv_fds(sv[0], r, 9);
     CHECK(n == 9, "received %d descriptors, want 9", n);
-    if (n != 9) { kill(c, SIGKILL); waitpid(c, NULL, 0); printf("W30 FAIL %d\n", fails); return 1; }
+    if (n != 9) {
+        int st = 0;
+        if (waitpid(c, &st, WNOHANG) == 0) { kill(c, SIGKILL); waitpid(c, &st, 0); }
+        static const char *what[9] = { "/dev/null", "/dev/zero", "/dev/urandom", "/dev/full", "the synthetic directory",
+                                       "/proc/self", "/proc/self/status", "itself with O_PATH", "a signalfd" };
+        if (WIFEXITED(st) && WEXITSTATUS(st) >= 11 && WEXITSTATUS(st) <= 19)
+            printf("W30 FAIL the child could not open %s%s%s: run it as the README says\n", what[WEXITSTATUS(st) - 11],
+                   WEXITSTATUS(st) == 15 ? " " : "", WEXITSTATUS(st) == 15 ? syn : "");
+        printf("W30 FAIL %d\n", fails);
+        return 1;
+    }
 
     unsigned char b[64];
     /* /dev/null: read_null, write_null, always ready, the sender's O_NONBLOCK */
