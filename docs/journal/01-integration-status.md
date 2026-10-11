@@ -534,3 +534,17 @@ MESURE, partie A (ensemble de résidence, le défaut) : les trois tampons UPLOAD
 MESURE, partie B (`DMN_RESIDENCY_SET=0`, chaque tampon de commandes déclare ses ressources) : câblée 12,6 Go en moyenne, 14,0 au plus ; mémoire GPU 14,6 Go (−11,7, les trois tampons) ; aucune alerte ; rien envoyé en swap ; 12 Mo compressés pour le jeu ; 49 i/s ; même part d'images retenues plus de 100 ms (4,7 et 4,8 %) et trois de plus d'une seconde dans les deux. Aucune erreur de rendu vue par l'utilisateur. Réserve : B partait avec 10 Go libres, A avec 0,7 ; la baisse de mémoire GPU et la fin des pics câblés viennent du mode, l'écart de swap et de compression en partie du point de départ.
 
 DÉDUIT : les 13 Go câblés en continu sont l'ensemble de travail du jeu (sa mémoire vidéo sur PC), pas du gaspillage. Changement : le lanceur d'Obelisk passe `DMN_RESIDENCY_SET=0` au serveur de rendu D3DMetal (sailover `0dad6ee`).
+
+## ELDEN RING : où passent les images, et deux essais écartés (2026-10-11, 16 h)
+
+MESURE, en 2560×1440, trois parties de 3 à 6 minutes de jeu, profil par fil (`FEXDARWIN_PROFILE=1`) et charge du GPU toutes les 2 s :
+
+- 32 à 35 i/s ; le GPU est occupé à 33 à 36 % (57 % au plus) et l'attente de barrière au moment de présenter reste sous 1,5 ms : le GPU n'est pas la limite.
+- Le jeu prend 6 à 7 cœurs. Les 14 fils `GXWorker` en prennent 5,6 à tourner entre deux tâches : par fil et par seconde, environ 37 000 `sched_yield` (4 µs chacun en jeu) et 74 000 `getrusage(RUSAGE_THREAD)` (1,4 µs), plus des attentes ntsync longues (585 µs en moyenne).
+- Le fil principal (`eldenring.exe`) n'utilise que 52 à 56 % d'un cœur : il attend. Par seconde : 20 000 à 26 600 appels ntsync (6,4 µs en moyenne), 3 600 attentes futex (45 à 60 µs), 2 500 à 3 200 lectures de réponses de wineserver (48 µs l'aller-retour), 386 000 `clock_gettime` (0,08 µs l'appel complet d'après `w36_syncpp` : un vDSO ne vaudrait pas la peine).
+
+Écarté, cadence coupée (`guest NPT_WSD_PACING=off`) : 32 i/s contre 35 avec la cadence ; les 2,8 ms d'attente par image ne sont pas sur le chemin critique.
+
+Écarté, attente active de 5 µs avant de dormir dans `fx_sleep` (futex et ntsync). Témoin `w36_syncpp` : l'aller-retour ntsync passe de 8,4 à 3,1 µs, le futex privé de 8,0 à 0,16 µs ; tests LKD, témoins et EAC de Rocket League sans régression. En jeu : 32 i/s, 6,7 cœurs au lieu de 6,0 ; les attentes futex du fil principal raccourcissent (60 à 45 µs) mais ses appels ntsync s'allongent (6,4 à 8,0 µs), l'attente active s'ajoutant à celles qui dorment quand même. Pas de gain : le changement n'est pas gardé.
+
+Reste à mesurer : quelles requêtes le fil principal envoie à wineserver 2 500 fois par seconde.

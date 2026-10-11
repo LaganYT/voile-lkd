@@ -77,3 +77,9 @@ Run:   `FEXDARWIN_LKD=1 FEXDARWIN_ROOT=<rootfs> FEXDARWIN_ROOT_RO=1 FEXDARWIN_BI
   write 256 KiB into it while the child reads slowly. Then a write end sent non-blocking must stay so (EAGAIN when
   full). No argument. With fexdarwin-run built from 76bcea8: the write end arrived non-blocking and the blocking writes
   got EAGAIN 614,628 times (Wine ends a thread whose request write fails that way). After: W35 PASS, 3 runs out of 3.
+- w36_syncpp: a measurement, not a check (always "W36 DONE"). Round trip between two threads through an ntsync event
+  pair, a private futex pair and a pthread mutex and condition variable, then the price of sched_yield,
+  getrusage(RUSAGE_THREAD) and clock_gettime by system call. Argument: round trips (20,000). fexdarwin-run built
+  from 827b74b: 8.1 to 8.4, 8.3 and 8.8 us per round trip, 0.21, 0.45 and 0.08 us per call. On this Mac without the
+  engine, os_sync_wait_on_address takes 2.75 us per round trip (private) and 4.74 us (shared), a condition variable
+  3.46 us.
