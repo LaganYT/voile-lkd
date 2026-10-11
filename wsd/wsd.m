@@ -39,14 +39,19 @@ static id<MTLRenderPipelineState> g_pipe;
 static BOOL g_exit_on_disconnect;
 static BOOL g_injecting;       /* set while DEBUG_INJECT feeds synthetic events */
 static BOOL g_relative_global; /* CGAssociateMouseAndMouseCursorPosition(false) in effect */
-static int g_cursor_hidden;
+static BOOL g_cursor_hide_wanted; /* the client asked for no cursor (WSD_CURSOR_VISIBLE 0) */
+static int g_cursor_hidden;       /* [NSCursor hide] in effect */
 static NSMutableSet *g_clients;
+
+/* A window holding the pointer that shows no new frame for this long gives it back (see -checkStalled:). */
+#define STALL_NS (5 * NSEC_PER_SEC)
 
 static void restore_input_state(void) {
   if (g_relative_global) {
     CGAssociateMouseAndMouseCursorPosition(true);
     g_relative_global = NO;
   }
+  g_cursor_hide_wanted = NO;
   while (g_cursor_hidden > 0) {
     [NSCursor unhide];
     g_cursor_hidden--;
@@ -175,10 +180,15 @@ static void probe_frame(WsdBuffer *b, uint64_t client_ns, uint64_t rx_ns) {
 @property uint32_t statCount;
 @property BOOL relative, clip, fullscreen, transitioning;
 @property NSRect clipPx;
+/* when the window last showed a new frame on either plane, and whether it has held the pointer without one for
+ * STALL_NS since (the pointer and the cursor are then the user's) */
+@property uint64_t shownNs;
+@property BOOL stalled;
 /* overlay plane (PRESENT_REGION, e.g. a D3D swapchain in the client area): a WsdWindow without an NSWindow of its
  * own, whose layer is a sublayer of the view's layer */
 @property(strong) WsdWindow *overlay;
 @property BOOL isOverlay;
+@property(weak) WsdWindow *base; /* an overlay's window */
 @property NSRect overlayPx;
 @property NSRect savedFrame;
 @property NSWindowStyleMask savedStyle;
@@ -260,6 +270,16 @@ static OSStatus audio_render(void *ref, AudioUnitRenderActionFlags *flags, const
 - (void)send:(uint32_t)type payload:(const void *)p len:(uint32_t)n extra:(NSData *)extra;
 - (void)close;
 @end
+
+/* The cursor is hidden while the client asks for it, unless one of its windows stopped showing frames. */
+static void sync_cursor(void) {
+  BOOL hide = g_cursor_hide_wanted;
+  for (WsdClient *c in g_clients)
+    for (WsdWindow *w in c.windows.allValues)
+      if (w.stalled) hide = NO;
+  if (hide && !g_cursor_hidden) { [NSCursor hide]; g_cursor_hidden = 1; }
+  if (!hide && g_cursor_hidden) { [NSCursor unhide]; g_cursor_hidden = 0; }
+}
 
 /* The screen with the menu bar: the client's display, and the origin of the pixel coordinates wsd exchanges with it.
  * NSScreen.mainScreen is the screen of the key window, which moves (2026-10-04: with Obelisk on the MacBook's screen,
@@ -365,6 +385,7 @@ static CAMetalLayer *make_metal_layer(void) {
 - (void)motion:(NSEvent *)e {
   WsdWindow *w = self.ww;
   if (w.relative) {
+    if (w.stalled) return; /* the user's pointer, not the game's camera: a stopped game would get it all at once */
     struct wsd_ev_relative r = {w.windowId, [self synth], (float)e.deltaX, (float)e.deltaY, [self evNs:e]};
     [w sendEvent:WSD_EV_RELATIVE payload:&r len:sizeof(r) extra:nil];
     return;
@@ -377,7 +398,7 @@ static CAMetalLayer *make_metal_layer(void) {
     float cy = fminf(fmaxf(m.y, c.origin.y), c.origin.y + c.size.height - 1);
     if (cx != m.x || cy != m.y) {
       m.flags |= 1; /* clamped */
-      if (!g_injecting) {
+      if (!g_injecting && !w.stalled) {
         /* Real pointer left the clip rect: warp it back (global, top-left display coordinates). */
         double s = backing_scale(self.window);
         NSPoint vp = NSMakePoint(cx / s, self.bounds.size.height - cy / s);
@@ -453,8 +474,8 @@ static CAMetalLayer *make_metal_layer(void) {
       [self sendKey:modifiers[i] down:YES];
 }
 - (void)windowDidBecomeKey:(NSNotification *)n {
-  /* back in the window: a relative-mode window takes the pointer again */
-  if (self.relative && !g_relative_global) {
+  /* back in the window: a relative-mode window takes the pointer again, once it shows frames */
+  if (self.relative && !g_relative_global && !self.stalled) {
     CGError e = CGAssociateMouseAndMouseCursorPosition(false);
     g_relative_global = (e == kCGErrorSuccess);
     LOG("window %u: focus back, relative mouse resumed (%d)", self.windowId, e);
@@ -475,6 +496,38 @@ static CAMetalLayer *make_metal_layer(void) {
   [self releaseHeldKeys];
   struct wsd_window_flag f = {self.windowId, 0};
   [self sendEvent:WSD_EV_FOCUS payload:&f len:sizeof(f) extra:nil];
+}
+/* A window that holds the pointer (relative mode or a clip rectangle) but has shown no new frame for STALL_NS gives
+ * it back and shows the cursor: a frozen game must not keep the Mac's mouse (2026-10-11: ELDEN RING froze in game
+ * with the mouse captured, and the user could no longer do anything). Nothing is watched before the window's first
+ * frame. The client is not told: its relative mode and clip come back with the next frame shown. */
+- (void)checkStalled:(uint64_t)now {
+  if (self.stalled || !self.shownNs || now - self.shownNs < STALL_NS || (!self.relative && !self.clip)) return;
+  self.stalled = YES;
+  if (self.relative && g_relative_global) {
+    CGAssociateMouseAndMouseCursorPosition(true);
+    g_relative_global = NO;
+  }
+  sync_cursor();
+  LOG("window %u: no frame shown for %.1f s, pointer and cursor given back", self.windowId,
+      (now - self.shownNs) / 1e9);
+}
+- (void)frameShownAt:(uint64_t)ns {
+  uint64_t gap = ns - self.shownNs;
+  self.shownNs = ns;
+  if (!self.stalled) return;
+  self.stalled = NO;
+  CGError e = kCGErrorSuccess;
+  BOOL take = self.relative && !g_relative_global && self.window.keyWindow;
+  if (take) {
+    e = CGAssociateMouseAndMouseCursorPosition(false);
+    g_relative_global = (e == kCGErrorSuccess);
+  }
+  sync_cursor();
+  if (take)
+    LOG("window %u: frames shown again after %.1f s, relative mouse resumed (%d)", self.windowId, gap / 1e9, e);
+  else
+    LOG("window %u: frames shown again after %.1f s", self.windowId, gap / 1e9);
 }
 - (void)windowDidResize:(NSNotification *)n {
   if (self.transitioning) return; /* one RESIZE per fullscreen transition */
@@ -590,6 +643,7 @@ static CAMetalLayer *make_metal_layer(void) {
       WsdWindow *sw = weakSelf;
       if (e2.presented_ns) sw.nPresented++; else sw.nZero++;
       if (e2.presented_ns && !redisplay) {
+        [sw.isOverlay ? sw.base : sw frameShownAt:now_ns()];
         if (sw.statLastNs && e2.presented_ns > sw.statLastNs) {
           uint64_t d = e2.presented_ns - sw.statLastNs;
           if (d > 50000000) { /* a hitch: wall-clock time, to match against profiles of the game */
@@ -703,6 +757,7 @@ static CAMetalLayer *make_metal_layer(void) {
     created = YES;
     o = [WsdWindow new];
     o.isOverlay = YES;
+    o.base = self;
     o.windowId = self.windowId;
     o.client = self.client;
     o.window = self.window;
@@ -734,10 +789,12 @@ static CAMetalLayer *make_metal_layer(void) {
   self.pendingBuffer = nil;
   [self.link invalidate];
   self.link = nil;
+  self.stalled = NO;
   if (self.relative) {
     restore_input_state();
     self.relative = NO;
   }
+  sync_cursor();
   if (self.fullscreen) NSApp.presentationOptions = NSApplicationPresentationDefault;
   self.window.delegate = nil;
   [self.window orderOut:nil];
@@ -1098,8 +1155,8 @@ static CAMetalLayer *make_metal_layer(void) {
   }
   case WSD_CURSOR_VISIBLE: {
     NEED(wsd_window_flag);
-    if (!m->value && g_cursor_hidden == 0) { [NSCursor hide]; g_cursor_hidden = 1; }
-    if (m->value && g_cursor_hidden) { [NSCursor unhide]; g_cursor_hidden = 0; }
+    g_cursor_hide_wanted = !m->value;
+    sync_cursor();
     break;
   }
   case WSD_CURSOR_CLIP: {
@@ -1115,6 +1172,11 @@ static CAMetalLayer *make_metal_layer(void) {
     WsdWindow *w = [self win:m->window_id req:type];
     if (!w) break;
     BOOL on = m->value != 0;
+    if (on && w.stalled) { /* the next frame shown takes the pointer */
+      w.relative = YES;
+      LOG("client %d: relative mouse on, waiting for a frame", self.pid);
+      break;
+    }
     if (on != w.relative) {
       CGError e = CGAssociateMouseAndMouseCursorPosition(!on);
       LOG("client %d: relative mouse %s -> CGAssociateMouseAndMouseCursorPosition(%d) = %d", self.pid,
@@ -1533,6 +1595,18 @@ int main(int argc, char **argv) {
     acc = dispatch_source_create(DISPATCH_SOURCE_TYPE_READ, (uintptr_t)ls, 0, dispatch_get_main_queue());
     dispatch_source_set_event_handler(acc, ^{ accept_one(ls); });
     dispatch_resume(acc);
+
+    /* every second, not per frame: windows holding the pointer without new frames give it back */
+    static dispatch_source_t stall_timer;
+    stall_timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+    dispatch_source_set_timer(stall_timer, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), NSEC_PER_SEC,
+                              NSEC_PER_SEC / 20);
+    dispatch_source_set_event_handler(stall_timer, ^{
+      uint64_t now = now_ns();
+      for (WsdClient *c in g_clients)
+        for (WsdWindow *w in c.windows.allValues) [w checkStalled:now];
+    });
+    dispatch_resume(stall_timer);
 
     LOG("listening on %s (pid %d, device %s, max %ld Hz)", path, getpid(), g_dev.name.UTF8String,
         (long)primary_screen().maximumFramesPerSecond);
