@@ -524,3 +524,13 @@ Rectificatif de l'entrée du matin, qui les donnait pour ouverts.
 - `w30_scmdev` échouait parce que je le lançais sans son répertoire synthétique (`FEXDARWIN_BIND="/lkdsyn/w=..."` et ses deux arguments, voir le README). Lancé ainsi, il passe avec le moteur d'avant comme avec celui d'après les correctifs. Le témoin dit maintenant quel descripteur l'enfant n'a pas pu ouvrir (`5ccfaf2`).
 
 Aucune correction du moteur n'était nécessaire.
+
+## ELDEN RING : mémoire, l'ensemble de résidence de d3dmetal-native coupé (2026-10-11, 15 h)
+
+Mesure toutes les 5 s pendant deux parties d'une dizaine de minutes, même parcours (titre, chargement de la sauvegarde, jeu), Mac de 36 Go déjà chargé par d'autres apps (13 à 15 Go de swap au départ). Outils hors dépôt : `vm_stat`, `vm.swapusage`, `kern.memorystatus_vm_pressure_level`, IOAccelerator « Alloc system memory », `top` (empreinte et mémoire compressée par processus).
+
+MESURE, partie A (ensemble de résidence, le défaut) : les trois tampons UPLOAD de 4 Gio arrivent à l'écran titre ; mémoire câblée 13,3 Go en moyenne avec des pics à 24,4 Go pendant les chargements ; mémoire GPU allouée 26,3 Go en moyenne ; 4 alertes de pression mémoire ; 3,3 Go envoyés en swap ; 3,9 Go compressés sur les 6 Go du jeu ; 48 i/s.
+
+MESURE, partie B (`DMN_RESIDENCY_SET=0`, chaque tampon de commandes déclare ses ressources) : câblée 12,6 Go en moyenne, 14,0 au plus ; mémoire GPU 14,6 Go (−11,7, les trois tampons) ; aucune alerte ; rien envoyé en swap ; 12 Mo compressés pour le jeu ; 49 i/s ; même part d'images retenues plus de 100 ms (4,7 et 4,8 %) et trois de plus d'une seconde dans les deux. Aucune erreur de rendu vue par l'utilisateur. Réserve : B partait avec 10 Go libres, A avec 0,7 ; la baisse de mémoire GPU et la fin des pics câblés viennent du mode, l'écart de swap et de compression en partie du point de départ.
+
+DÉDUIT : les 13 Go câblés en continu sont l'ensemble de travail du jeu (sa mémoire vidéo sur PC), pas du gaspillage. Changement : le lanceur d'Obelisk passe `DMN_RESIDENCY_SET=0` au serveur de rendu D3DMetal (sailover `0dad6ee`).
