@@ -502,3 +502,16 @@ Gel 2, le mode bloquant des tubes passés par SCM_RIGHTS (`d924c5b`). MESURE (jo
 Vérifications : tests LKD (`test_sig_futex` expire sur `waitv` comme avant ces changements), témoins w22 à w33 et w35, `w30_scmdev` échoue comme avant, Rocket League EAC 301 deux fois avec chaque moteur. En jeu : partie de 11:52 à 12:01 sans gel, quittée par l'utilisateur. Moteur installé à la main dans le runtime de dev : `fexdarwin-run` cae1f598, sauvegardes `*.87493e9b`, `*.9e4dd94b` et `*.e759f92c`.
 
 Restent ouverts : `test_sig_futex` (`waitv`) et `w30_scmdev`, qui échouaient déjà ; une extrémité de tube envoyée à un processus invité du même processus hôte garde l'ancien chemin.
+
+## wsd rend la souris quand le jeu ne montre plus d'images (2026-10-11, après-midi)
+
+Contexte. Les gels de ce matin laissaient la souris capturée par le jeu figé, et l'utilisateur ne pouvait plus rien faire sur le Mac. La capture du mode relatif (`CGAssociateMouseAndMouseCursorPosition`) vaut pour toute la session, et seule une perte de focus la relâchait.
+
+Correctif (`54464f7`). wsd note quand chaque fenêtre a affiché sa dernière image nouvelle, sur le plan de base comme sur le plan superposé, où ELDEN RING et Rocket League présentent. Une minuterie d'une seconde regarde les fenêtres qui tiennent le pointeur, en mode relatif ou avec un rectangle de clip. Par image, il n'y a que cet horodatage en plus. Après 5 s sans image, wsd réassocie le pointeur, réaffiche le curseur et cesse de ramener le pointeur dans le rectangle de clip. Les mouvements ne partent plus au jeu en deltas relatifs, sinon il les recevrait tous d'un coup à la reprise. La première image affichée ensuite remet le mode relatif si la fenêtre est active, et cache de nouveau le curseur si le client l'avait demandé. Le client n'est prévenu de rien. Revenir dans la fenêtre pendant le gel ne recapture pas. Rien n'est surveillé avant la première image de la fenêtre.
+
+MESURE :
+- Client de test hors dépôt contre un wsd privé, avec un clip plus grand que la fenêtre pour ne pas piéger le vrai pointeur. 7 s de clip avant toute image, aucun déclenchement. Images du plan de base arrêtées, relâche à 5,8 s ; images du plan superposé, reprise ; nouvel arrêt, relâche à 5,7 s, puis reprise.
+- ELDEN RING en jeu, souris capturée, processus du jeu arrêté 20 s par `kill -STOP` : relâche à 5,5 s, pointeur libre et curseur visible (vu par l'utilisateur). Après `kill -CONT`, `frames shown again after 23.6 s, relative mouse resumed`, et la souris pilote de nouveau la caméra.
+- Le chargement de la partie, juste avant, est resté 8,4 s sans image : souris relâchée, reprise à la première image. Un chargement muet de plus de 5 s montre donc le curseur jusqu'à ce qu'une image revienne.
+
+wsd installé à la main dans le runtime de dev : `e16992cc`, sauvegarde `wsd.8e706708`.
