@@ -515,3 +515,12 @@ MESURE :
 - Le chargement de la partie, juste avant, est resté 8,4 s sans image : souris relâchée, reprise à la première image. Un chargement muet de plus de 5 s montre donc le curseur jusqu'à ce qu'une image revienne.
 
 wsd installé à la main dans le runtime de dev : `e16992cc`, sauvegarde `wsd.8e706708`.
+
+## Les deux échecs « déjà présents » n'étaient pas des bugs du moteur (2026-10-11, après-midi)
+
+Rectificatif de l'entrée du matin, qui les donnait pour ouverts.
+
+- `test_sig_futex` bloquait sur le cas `waitv` (`827b74b`). Son échéance « dans 20 ms » venait de `CLOCK_MONOTONIC_RAW` de l'hôte, qui compte la veille, et partait comme `CLOCK_MONOTONIC` invité, que LKD fait correspondre à `CLOCK_UPTIME_RAW`, arrêté pendant la veille comme sous Linux. MESURE : 2 180 s d'écart sur ce Mac, donc une attente de 36 minutes. Le cas voisin prenait déjà l'horloge invitée. Après : 13 cas, 3 fois sur 3 ; suite LKD 44 sur 44.
+- `w30_scmdev` échouait parce que je le lançais sans son répertoire synthétique (`FEXDARWIN_BIND="/lkdsyn/w=..."` et ses deux arguments, voir le README). Lancé ainsi, il passe avec le moteur d'avant comme avec celui d'après les correctifs. Le témoin dit maintenant quel descripteur l'enfant n'a pas pu ouvrir (`5ccfaf2`).
+
+Aucune correction du moteur n'était nécessaire.
