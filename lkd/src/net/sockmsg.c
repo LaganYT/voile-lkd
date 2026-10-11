@@ -310,7 +310,7 @@ LKD_SYSCALL(recvfrom)
 /* ---- sendmsg / recvmsg ------------------------------------------------------------------------- */
 
 /* Parse the guest control buffer into a host control buffer (SCM_RIGHTS only). */
-static int64_t build_send_ctl(lkd_task *t, struct net_sock *sk, uint64_t ctl_gva, uint64_t ctl_len,
+static int64_t build_send_ctl(lkd_task *t, lkd_fdobj *so, struct net_sock *sk, uint64_t ctl_gva, uint64_t ctl_len,
                               uint8_t **hctl, socklen_t *hlen, int *hfds, int *nh)
 {
     *hctl = NULL;
@@ -324,6 +324,7 @@ static int64_t build_send_ctl(lkd_task *t, struct net_sock *sk, uint64_t ctl_gva
     if (lkd_user_read(ctl_gva, buf, ctl_len) < 0) { free(buf); return -LX_EFAULT; }
     int64_t ret = 0;
     int nguest = 0;
+    int to_family = -1;                             /* looked up at the first SCM_RIGHTS */
     for (uint64_t off = 0; off + sizeof(struct lx_cmsghdr) <= ctl_len;) {
         struct lx_cmsghdr ch;
         memcpy(&ch, buf + off, sizeof ch);
@@ -333,12 +334,13 @@ static int64_t build_send_ctl(lkd_task *t, struct net_sock *sk, uint64_t ctl_gva
             if (ch.cmsg_type == LX_SCM_RIGHTS) {
                 int n = (int)((ch.cmsg_len - sizeof ch) / sizeof(int32_t));
                 if (nguest + n > LX_SCM_MAX_FD) { ret = -LX_EINVAL; break; }
+                if (to_family < 0) to_family = net_peer_is_family(so);
                 for (int i = 0; i < n; i++) {
                     int32_t gfd;
                     memcpy(&gfd, buf + off + sizeof ch + (size_t)i * 4, 4);
                     lkd_fdobj *x = lkd_fd_get(t, gfd, NULL);
                     if (!x) { ret = -LX_EBADF; break; }
-                    int k = net_scm_export(x, hfds + *nh, HOST_MAX_FDS - *nh);
+                    int k = net_scm_export(x, hfds + *nh, HOST_MAX_FDS - *nh, to_family);
                     lkd_fdobj_put(x);
                     if (k < 0) { ret = k; break; }
                     *nh += k;
@@ -417,7 +419,7 @@ static int64_t do_sendmsg(lkd_task *t, int fd, uint64_t msg_gva, int flags)
     socklen_t hlen = 0;
     int hfds[HOST_MAX_FDS];
     int nh = 0;
-    r = build_send_ctl(t, sk, mh.msg_control, mh.msg_controllen, &hctl, &hlen, hfds, &nh);
+    r = build_send_ctl(t, o, sk, mh.msg_control, mh.msg_controllen, &hctl, &hlen, hfds, &nh);
     if (r < 0) goto out;
     r = send_core(t, o, iov, (int)mh.msg_iovlen, total, flags, to, hctl, hlen);
     for (int i = 0; i < nh; i++) close(hfds[i]);   /* the host duplicated what was in flight */

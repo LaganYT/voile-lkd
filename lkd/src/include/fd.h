@@ -140,6 +140,7 @@ enum {
     LKD_FDREC_DEV = 2,         /* procfs: an emulated character device without a host twin (/dev/full, O_PATH) */
     LKD_FDREC_PROCFS = 3,      /* procfs: a generated file of /proc or /sys, or /proc/<pid>/mem, with its position */
     LKD_FDREC_SIGNALFD = 4,    /* sig: a signalfd with its mask (reads the receiver's own signals, as on Linux) */
+    LKD_FDREC_PIPE = 5,        /* fs: the guest status flags of a pipe end, sent right before its host pipe */
     LKD_FDREC_TYPES
 };
 #define LKD_FDREC_MAX_DATA (16384u - 32u)
@@ -154,5 +155,7 @@ void lkd_fdrec_register(uint32_t type, lkd_fdrec_import_fn fn);
 /* 0: host_fd is not a record (left untouched); 1: *out holds the rebuilt object; -errno: a record that could not
  * be rebuilt. host_fd stays owned by the caller in every case. */
 int lkd_fdrec_import(lkd_task *t, int host_fd, lkd_fdobj **out);
+/* 1 with its type and status flags when host_fd is a record, else 0. Reads only. */
+int lkd_fdrec_peek(int host_fd, uint32_t *type, uint32_t *status_flags);
 
 #endif /* LKD_FD_H */

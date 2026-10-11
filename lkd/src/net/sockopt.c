@@ -87,6 +87,22 @@ int net_peer_cred(lkd_fdobj *o, struct lx_ucred *u)
     return known;
 }
 
+int net_peer_is_family(lkd_fdobj *o)
+{
+    pid_t hp = 0;
+    socklen_t pl = sizeof hp;
+    if (getsockopt(o->host_fd, SOL_LOCAL, LOCAL_PEERPID, &hp, &pl) < 0 || hp <= 0 || hp == getpid()) return 0;
+    static lkd_proc_info list[256];
+    static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
+    int found = 0;
+    pthread_mutex_lock(&mu);
+    int n = lkd_proc_list(list, 256);
+    for (int i = 0; i < n && !found; i++)
+        if (list[i].host_pid == hp && list[i].state != 'Z') found = 1;
+    pthread_mutex_unlock(&mu);
+    return found;
+}
+
 static int64_t put_opt(uint64_t optval, uint64_t optlen_gva, const void *v, uint32_t vlen, int32_t ulen)
 {
     uint32_t n = (uint32_t)ulen < vlen ? (uint32_t)ulen : vlen;

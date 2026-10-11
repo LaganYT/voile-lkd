@@ -7,6 +7,12 @@
  * SIGPIPE; a write to a pipe without readers returns -EPIPE and sends SIGPIPE to the calling thread
  * like Linux pipe_write (send_sig(SIGPIPE, current, 0)).
  * Capacity: 65536 bytes, MESURE on macOS 27 (non-blocking fill of a fresh pipe), the Linux default.
+ * SCM_RIGHTS to another host process: a record with the end's guest status flags goes first, then the host
+ * pipe, and the receiver rebuilds a pipe end (lkd_fs_pipe_adopt). Received alone, a host FIFO is a stream whose
+ * host O_NONBLOCK is the guest's: an LKD pipe end, always O_NONBLOCK on the host, was then non-blocking for the
+ * receiver. Wine's wineserver creates each thread's request pipe and sends its write end to the client: a
+ * request written while the pipe was full failed with EAGAIN, and Wine ended the thread ("wine client error:
+ * write: Resource temporarily unavailable"), here ELDEN RING's XInput thread with XInput's lock held.
  */
 #include <fcntl.h>
 #include <poll.h>
@@ -160,10 +166,40 @@ static int pipe_describe(lkd_fdobj *o, char *buf, size_t cap)
 
 static int pipe_fsync(lkd_task *t, lkd_fdobj *o, int datasync) { (void)t; (void)o; (void)datasync; return -LX_EINVAL; }
 
+static int pipe_export(lkd_fdobj *o, int *hfds, int cap)
+{
+    if (cap < 2) return -LX_ETOOMANYREFS;
+    int r = lkd_fdrec_export(LKD_FDREC_PIPE, atomic_load(&o->status_flags), NULL, 0, &hfds[0]);
+    if (r < 0) return r;
+    hfds[1] = fcntl(o->host_fd, F_DUPFD_CLOEXEC, 0);
+    if (hfds[1] < 0) {
+        int e = (int)LKD_HOST_ERR();
+        close(hfds[0]);
+        return e;
+    }
+    return 2;
+}
+
 const lkd_fd_ops fs_pipe_ops = {
     .name = "pipe", .read = pipe_read, .write = pipe_write, .ioctl = pipe_ioctl, .fcntl = pipe_fcntl,
-    .poll = pipe_poll, .fstat = pipe_fstat, .fsync = pipe_fsync, .describe = pipe_describe,
+    .poll = pipe_poll, .fstat = pipe_fstat, .fsync = pipe_fsync, .describe = pipe_describe, .export_fds = pipe_export,
 };
+
+int lkd_fs_pipe_adopt(int host_fd, uint32_t status_flags, lkd_fdobj **out)
+{
+    struct stat st;
+    if (fstat(host_fd, &st) < 0) return LKD_HOST_ERR();
+    if (!S_ISFIFO(st.st_mode)) return -LX_EINVAL;
+    fcntl(host_fd, F_SETFD, FD_CLOEXEC);
+    int fl = fcntl(host_fd, F_GETFL);
+    if (fl >= 0 && !(fl & O_NONBLOCK)) fcntl(host_fd, F_SETFL, fl | O_NONBLOCK);
+    fcntl(host_fd, F_SETNOSIGPIPE, 1);
+    lkd_fdobj *o = lkd_fdobj_new(LKD_FD_PIPE, &fs_pipe_ops, host_fd, status_flags, NULL);
+    if (!o) return -LX_ENFILE;
+    o->ino = (uint64_t)st.st_ino;
+    *out = o;
+    return 0;
+}
 
 int fs_pipe_create(int nonblock, lkd_fdobj **rd, lkd_fdobj **wr)
 {

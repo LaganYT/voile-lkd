@@ -72,3 +72,8 @@ Run:   `FEXDARWIN_LKD=1 FEXDARWIN_ROOT=<rootfs> FEXDARWIN_ROOT_RO=1 FEXDARWIN_BI
   signalled threads use the VMA lock (every thread waiting on mm->vlock, a writer queued, no holder: macOS 27's
   pthread_rwlock, fact G1); `nosig` and `sigidle` pass. After (mm_rwlock): W34 PASS, 3 runs out of 3, 91 to 99
   million copies in 20 s instead of 27 million without signals before.
+- w35_scmpipe: a pipe end sent through SCM_RIGHTS to another process keeps its blocking mode. Wine's case: the child
+  creates a pipe, makes its read end non-blocking, sends the write end; the parent must see a blocking descriptor and
+  write 256 KiB into it while the child reads slowly. Then a write end sent non-blocking must stay so (EAGAIN when
+  full). No argument. With fexdarwin-run built from 76bcea8: the write end arrived non-blocking and the blocking writes
+  got EAGAIN 614,628 times (Wine ends a thread whose request write fails that way). After: W35 PASS, 3 runs out of 3.

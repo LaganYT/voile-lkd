@@ -120,6 +120,10 @@ int net_sockopt_get_error(lkd_fdobj *o);
 /* Credentials of the peer of an AF_UNIX socket as the guest sees them. Returns 1 when the peer is a
  * process of the family (pid known), else 0 with pid 0 and the overflow ids. */
 int net_peer_cred(lkd_fdobj *o, struct lx_ucred *u);
+/* 1 when the peer of the connected AF_UNIX socket o is another host process of this guest family. A peer in this
+ * host process (a guest process cohosted before its exec) gets host descriptors, as a host program does: a pipe end
+ * then arrives with the host's O_NONBLOCK (documented gap). */
+int net_peer_is_family(lkd_fdobj *o);
 
 /* ---- Interfaces and NETLINK_ROUTE (ifaces.c) ------------------------------------------------- */
 int net_if_ioctl(uint32_t cmd, uint64_t arg, int64_t *ret);   /* 1 when cmd is an interface ioctl */
@@ -130,9 +134,10 @@ int net_nl_bind(lkd_task *t, struct net_sock *sk, uint64_t addr, uint32_t len);
 
 /* ---- SCM_RIGHTS object transport (scm.c) ------------------------------------------------------ */
 
-/* Host descriptors that carry object o to another process (dup'ed, the caller closes them).
- * Returns the count (1..3) or -errno (-EOPNOTSUPP for objects that cannot cross processes). */
-int net_scm_export(lkd_fdobj *o, int *hfds, int cap);
+/* Host descriptors that carry object o to another process (dup'ed, the caller closes them). to_family: the receiving
+ * end is another host process of the family (net_peer_is_family), which reads LKD's records; a host program gets
+ * host descriptors only. Returns the count (1..3) or -errno (-EOPNOTSUPP for objects that cannot cross processes). */
+int net_scm_export(lkd_fdobj *o, int *hfds, int cap, int to_family);
 /* Rebuild objects from received host fds (takes ownership of every fd). Fills objs; returns count. */
 int net_scm_import(lkd_task *t, const int *hfds, int n, lkd_fdobj **objs, int cap);
 

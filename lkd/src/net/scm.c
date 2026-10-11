@@ -10,7 +10,8 @@
  * processes (MESURE: sendmsg of a kqueue descriptor gives EINVAL; their state is a kqueue and a table of
  * this process): sendmsg answers -EOPNOTSUPP for them, visibly.
  *
- * Receiving: each host descriptor is rebuilt from what fstat says. A socket becomes a socket object
+ * Receiving: each host descriptor is rebuilt from what fstat says, except a pipe end, which arrives as a record
+ * with its guest flags followed by its host pipe (fs/pipe.c). A socket becomes a socket object
  * (domain from getsockname, type from SO_TYPE); a POSIX shm object (no file type bits, MESURE) becomes an
  * eventfd when it carries the eventfd magic, the object a record describes, or else a mappable
  * shared-memory file object; anything else goes to the fs module (regular file, directory, FIFO, character
@@ -92,7 +93,7 @@ static int wrap_shm(int fd, lkd_fdobj **out)
 
 /* ---- export ------------------------------------------------------------------------------------ */
 
-int net_scm_export(lkd_fdobj *o, int *hfds, int cap)
+int net_scm_export(lkd_fdobj *o, int *hfds, int cap, int to_family)
 {
     int nt = lkd_ntsync_export(o, hfds, cap);   /* an ntsync device or object travels as its anchor */
     if (nt) return nt;
@@ -100,7 +101,8 @@ int net_scm_export(lkd_fdobj *o, int *hfds, int cap)
         if (cap < 3) return -LX_ETOOMANYREFS;
         return net_eventfd_export(o, hfds);
     }
-    if (o->ops && o->ops->export_fds) {
+    /* a pipe end goes with its guest flags to the family only: a host program would take the record for the pipe */
+    if (o->ops && o->ops->export_fds && (to_family || o->kind != LKD_FD_PIPE)) {
         if (cap < 1) return -LX_ETOOMANYREFS;
         return o->ops->export_fds(o, hfds, cap);
     }
@@ -167,6 +169,15 @@ int net_scm_import(lkd_task *t, const int *hfds, int n, lkd_fdobj **objs, int ca
                     e = net_eventfd_from_host(fd, hfds[i + 1], hfds[i + 2], &o);
                     if (e == 0) { i += 2; objs[k++] = o; continue; }
                 }
+            }
+            uint32_t rtype = 0, rflags = 0;
+            struct stat ps;
+            if (i + 1 < n && lkd_fdrec_peek(fd, &rtype, &rflags) && rtype == LKD_FDREC_PIPE && fstat(hfds[i + 1], &ps) == 0 &&
+                S_ISFIFO(ps.st_mode) && lkd_fs_pipe_adopt(hfds[i + 1], rflags, &o) == 0) {
+                close(fd);                          /* a pipe end: its record, then its host pipe (fs/pipe.c) */
+                i += 1;
+                objs[k++] = o;
+                continue;
             }
             int rec = lkd_fdrec_import(t, fd, &o);
             if (rec != 0) {

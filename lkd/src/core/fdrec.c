@@ -60,6 +60,21 @@ int lkd_fdrec_export(uint32_t type, uint32_t status_flags, const void *data, siz
     return 1;
 }
 
+int lkd_fdrec_peek(int host_fd, uint32_t *type, uint32_t *status_flags)
+{
+    struct stat st;
+    if (fstat(host_fd, &st) < 0 || (st.st_mode & S_IFMT) != 0 || st.st_size != REC_SIZE) return 0;
+    const uint8_t *p = mmap(NULL, REC_SIZE, PROT_READ, MAP_SHARED, host_fd, 0);
+    if (p == MAP_FAILED) return 0;
+    struct rec_hdr h;
+    memcpy(&h, p, sizeof h);
+    munmap((void *)p, REC_SIZE);
+    if (memcmp(h.magic, REC_MAGIC, 8) != 0 || h.version != 1 || h.len > LKD_FDREC_MAX_DATA) return 0;
+    *type = h.type;
+    *status_flags = h.status_flags;
+    return 1;
+}
+
 int lkd_fdrec_import(lkd_task *t, int host_fd, lkd_fdobj **out)
 {
     struct stat st;

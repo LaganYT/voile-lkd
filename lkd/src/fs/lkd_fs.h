@@ -19,6 +19,9 @@ int lkd_fs_open_guest_file(lkd_task *t, const char *guest_path, lkd_fdobj **out)
  * character device, FIFO or socket stream, chosen from fstat. lx_flags are the Linux status flags to
  * record (access mode; O_NONBLOCK and O_APPEND are read from the host fd). */
 int lkd_fs_wrap_host_fd(int host_fd, uint32_t lx_flags, const char *guest_path, lkd_fdobj **out);
+/* A pipe end received from another host process (net/scm.c): host_fd is its host pipe, status_flags the sender's
+ * guest flags (access mode, O_NONBLOCK) from the record sent before it. */
+int lkd_fs_pipe_adopt(int host_fd, uint32_t status_flags, lkd_fdobj **out);
 
 /* Install the host stdin, stdout and stderr (dup'ed) as guest fds 0, 1, 2 of t. Returns 0 or -errno. */
 int lkd_fs_install_stdio(lkd_task *t);
