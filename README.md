@@ -4,7 +4,7 @@
 
 [Obelisk](https://github.com/Zagrios/obelisk) uses it for Windows games whose anti-cheat supports Linux, such as Easy Anti-Cheat in Rocket League and ELDEN RING. The game runs in voile-wine built for Linux, and the anti-cheat loads its Linux module and sees a real Linux kernel interface.
 
-This repository is private. [docs/V1.md](docs/V1.md) records what works, the measurements behind it and the known limits.
+[docs/V1.md](docs/V1.md) records what works, the measurements behind it and the known limits.
 
 ## Contents
 
@@ -91,7 +91,7 @@ The scripts in `tools/dev/` and most of `tests/` expect the development workspac
 
 ## License
 
-voile-lkd is proprietary: see `LICENSE`. The third-party works it includes or derives from keep their licenses, listed in `NOTICE`: HyperLinux (Apache-2.0), FEX-Emu (MIT) and the Linux uapi headers (GPL-2.0 WITH Linux-syscall-note, used as numeric ABI facts only).
+voile-lkd is licensed under the GNU General Public License v3.0: see `LICENSE`. The third-party works it includes or derives from keep their licenses, listed in `NOTICE`: HyperLinux (Apache-2.0), FEX-Emu (MIT) and the Linux uapi headers (GPL-2.0 WITH Linux-syscall-note, used as numeric ABI facts only).
 
 ## Related repositories
 

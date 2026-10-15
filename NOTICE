@@ -1,5 +1,5 @@
 voile-lkd includes or derives from the following third-party works. Their licenses apply to those
-parts; everything else is proprietary (see LICENSE).
+parts; everything else is licensed under the GNU General Public License v3.0 (see LICENSE).
 
 - lkd/: see lkd/NOTICE and the NOTICE files of its modules (HyperLinux, Apache-2.0; Linux uapi
   headers, GPL-2.0 WITH Linux-syscall-note, as numeric ABI facts only; FEX-Emu, MIT).

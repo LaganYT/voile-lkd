@@ -1,4 +1,5 @@
-LKD (Linux kernel on Darwin), private research code for the Obelisk project.
+LKD (Linux kernel on Darwin), part of the Obelisk project, licensed under the GNU General Public License v3.0
+except for the parts below.
 
 This tree incorporates or derives from the following third-party works.
 
