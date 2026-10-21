@@ -324,6 +324,47 @@ LT_TEST(phased_shared_mapping)
     T->mm = saved;
 }
 
+/* Easy Anti-Cheat in HELLDIVERS 2 (SOS G4P4-HCAY): a 4 KiB memfd mapped RX, MAP_SHARED|MAP_FIXED_NOREPLACE, at 64 KiB
+ * steps up to 20 each way around the libc function it hooks, then the same memfd RW anywhere. Packed libraries left
+ * no whole free host page there; mm now leaves a gap above each file mapping it places. */
+LT_TEST(trampoline_beside_libraries)
+{
+    lkd_mm *saved = T->mm;
+    T->mm = lkd_mm_create();
+    LT_CHECK(T->mm != NULL);
+    if (!T->mm) { T->mm = saved; return; }
+    int64_t lib = mfd("lib", LX_MFD_CLOEXEC);
+    LT_EQ(SC(T, ftruncate, lib, 0x700000), 0);
+    /* libraries as ld.so maps them, top-down: one above libc, libc, a larger one below it with an odd size */
+    int64_t above = SC(T, mmap, 0, 0x200000, LX_PROT_READ, LX_MAP_PRIVATE, lib, 0);
+    int64_t libc = SC(T, mmap, 0, 0x1f3e50, LX_PROT_READ | LX_PROT_EXEC, LX_MAP_PRIVATE, lib, 0);
+    int64_t below = SC(T, mmap, 0, 0x680478, LX_PROT_READ, LX_MAP_PRIVATE, lib, 0);
+    LT_CHECK(above > 0 && libc > 0 && below > 0);
+    LT_CHECK(libc + 0x1f4000 + (128 << 10) <= above);                      /* FILE_MAP_GAP */
+    LT_CHECK(below + 0x681000 + (128 << 10) <= libc);
+    int64_t eac = mfd("", LX_MFD_CLOEXEC);
+    LT_EQ(SC(T, ftruncate, eac, 0x1000), 0);
+    uint64_t base = (((uint64_t)libc + 0x105000) & ~0xffffull) + 0x9000, at = 0;
+    for (int k = 0; k <= 20 && !at; k++)
+        for (int s = k ? -1 : 1; s <= 1 && !at; s += 2) {
+            uint64_t c = base + (uint64_t)(s * k) * 0x10000;
+            if (SC(T, mmap, c, 0x1000, LX_PROT_READ | LX_PROT_EXEC, LX_MAP_SHARED | LX_MAP_FIXED_NOREPLACE, eac, 0) ==
+                (int64_t)c)
+                at = c;
+        }
+    LT_CHECK(at != 0);
+    int64_t rw = SC(T, mmap, 0, 0x1000, LX_PROT_READ | LX_PROT_WRITE, LX_MAP_SHARED, eac, 0);
+    LT_CHECK(rw > 0);
+    if (rw > 0 && at) {
+        ((uint8_t *)lkd_g2h((uint64_t)rw))[0] = 0xc3;
+        LT_EQ(((uint8_t *)lkd_g2h(at))[0], 0xc3);
+    }
+    SC(T, close, eac);
+    SC(T, close, lib);
+    lkd_mm_put(T->mm);
+    T->mm = saved;
+}
+
 LT_TEST(mmap_checks_and_fdinfo)
 {
     const int RW = LX_PROT_READ | LX_PROT_WRITE;
@@ -378,6 +419,7 @@ int main(void)
     LT_RUN(seals_across_fork);
     LT_RUN(sealed_memfd_mprotect);
     LT_RUN(phased_shared_mapping);
+    LT_RUN(trampoline_beside_libraries);
     LT_RUN(mmap_checks_and_fdinfo);
     LT_RUN(no_leftover);
     rm_rf(ROOT);

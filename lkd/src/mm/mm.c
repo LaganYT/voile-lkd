@@ -773,9 +773,17 @@ int mm_protect_locked(lkd_mm *mm, uint64_t start, uint64_t end, uint32_t prot, s
 
 /* ---- Free range search ------------------------------------------------------------------------- */
 
+/* Free memory left above a file mapping placed here, such as a library ld.so maps. Linux packs them, and a program
+ * that needs a page beside a library finds one in the tail of its last page or between them; here that tail shares
+ * a host page with the library, where no MAP_SHARED view fits. Easy Anti-Cheat maps its trampolines there (a 4 KiB
+ * memfd, MAP_SHARED|MAP_FIXED_NOREPLACE, at 64 KiB steps up to about 1.25 MiB around the libc function it hooks):
+ * HELLDIVERS 2 found no room and stopped on an error (SOS G4P4-HCAY). Over 64 KiB plus a host page, every such scan
+ * that crosses the gap meets a whole free host page. */
+#define FILE_MAP_GAP (128ull << 10)
+
 struct fitctx {
     lkd_mm *mm;
-    uint64_t len, align, off;
+    uint64_t len, align, off, gap;
     int hostshared, topdown;
 };
 
@@ -785,6 +793,7 @@ static uint64_t fit(void *c, uint64_t glo, uint64_t ghi, mm_vma *prev, mm_vma *n
     uint64_t lo = glo, hi = ghi;
     if (f->hostshared || (prev && (prev->vflags & VF_HOSTSHARED))) lo = HP_UP(lo);
     if (f->hostshared || (next && (next->vflags & VF_HOSTSHARED))) hi = HP_DOWN(hi);
+    if (next && f->gap) hi = hi > lo + f->gap ? HP_DOWN(hi) - f->gap : lo;
     if (hi <= lo || hi - lo < f->len) return 0;
     uint64_t a;
     if (f->topdown) {
@@ -801,9 +810,9 @@ static uint64_t fit(void *c, uint64_t glo, uint64_t ghi, mm_vma *prev, mm_vma *n
 }
 
 static uint64_t search(lkd_mm *mm, uint64_t len, uint64_t low, uint64_t high, int topdown, int hostshared,
-                       uint64_t align, uint64_t off)
+                       uint64_t align, uint64_t off, uint64_t gap)
 {
-    struct fitctx f = { mm, hostshared ? HP_UP(len) : len, align, off & (align - 1), hostshared, topdown };
+    struct fitctx f = { mm, hostshared ? HP_UP(len) : len, align, off & (align - 1), gap, hostshared, topdown };
     if (high <= low || f.len > high - low) return 0;
     return vt_search(&mm->vt, f.len, low, high, mm_win.g_hi, topdown, fit, &f);
 }
@@ -815,13 +824,16 @@ static uint64_t search_any(lkd_mm *mm, uint64_t len, uint64_t low, uint64_t high
     if (hostshared) {
         /* whole host pages are reserved for the object; the VMA sits at the position the offset needs */
         uint64_t intra = pgoff & (mm_hps - 1);
-        a = search(mm, len + intra, low, high, topdown, 1, mm_hps, 0);
+        a = search(mm, len + intra, low, high, topdown, 1, mm_hps, 0, 0);
         return a ? a + intra : 0;
     }
     /* Prefer an address congruent with the file offset modulo the host page so the file can be mapped
-     * directly; any 4 KiB address otherwise (Linux has no alignment constraint here). */
-    if (filemap) a = search(mm, len, low, high, topdown, 0, mm_hps, pgoff);
-    if (!a) a = search(mm, len, low, high, topdown, 0, GP, 0);
+     * directly; any 4 KiB address otherwise (Linux has no alignment constraint here). A file mapping leaves
+     * FILE_MAP_GAP free above it while there is room for it. */
+    uint64_t gap = filemap ? FILE_MAP_GAP : 0;
+    if (filemap) a = search(mm, len, low, high, topdown, 0, mm_hps, pgoff, gap);
+    if (!a) a = search(mm, len, low, high, topdown, 0, GP, 0, gap);
+    if (!a && gap) a = search(mm, len, low, high, topdown, 0, GP, 0, 0);
     return a;
 }
 
@@ -975,6 +987,7 @@ int lkd_mm_find_nowait(lkd_mm *mm, uint64_t addr, struct lkd_vma_info *out)
     mrw_rdunlock(&mm->vlock);
     return v ? 0 : -LX_ENOENT;
 }
+
 
 static int same_file(const struct mm_backing *b, struct lkd_fdobj *file, uint64_t ino, uint64_t dev_major,
                      uint64_t dev_minor, int have_id)
