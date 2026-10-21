@@ -631,9 +631,11 @@ int64_t mm_map_locked(lkd_mm *mm, struct mm_mapreq *rq, struct mm_inval *iv)
         }
     }
     if (mm_host_conflict(mm, s, e, hostshared, rq->prot, rq->bk, rq->pgoff)) {
-        lkd_log_once("mm: %s at 0x%llx would put an accessible mapping and a MAP_SHARED mapping in one "
-                     "16 KiB host page (siblings must be unmapped or PROT_NONE): EINVAL",
-                     hostshared ? "MAP_SHARED" : "mapping", (unsigned long long)s);
+        lkd_log_once("mm: %s at 0x%llx len 0x%llx prot %u offset 0x%llx of %s would put an accessible mapping "
+                     "and a MAP_SHARED mapping in one 16 KiB host page (siblings must be unmapped or PROT_NONE): "
+                     "EINVAL", hostshared ? "MAP_SHARED" : "mapping", (unsigned long long)s,
+                     (unsigned long long)rq->len, rq->prot, (unsigned long long)rq->pgoff,
+                     rq->bk && rq->bk->name ? rq->bk->name : rq->bk ? "a shared object" : "anonymous memory");
         return -LX_EINVAL;
     }
     if (mm->vt.n + 1 > MAX_MAP_COUNT) return -LX_ENOMEM;
