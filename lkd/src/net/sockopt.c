@@ -10,6 +10,7 @@
  *   SO_PEERCRED     LOCAL_PEERCRED + LOCAL_PEERPID, pid and ids mapped to the guest's
  *   SO_PASSCRED     a flag: recvmsg adds SCM_CREDENTIALS built from LOCAL_PEERPID/LOCAL_PEERCRED
  *   boolean options are read back as 0/1 (Darwin returns the option bit)
+ *   IP_MTU_DISCOVER, IPV6_MTU_DISCOVER, IPV6_DONTFRAG  kept in the object (apply_dontfrag)
  * Anything else answers -ENOPROTOOPT and is logged once.
  */
 #include <sys/socket.h>
@@ -21,6 +22,7 @@
 
 #include "net_priv.h"
 
+#define DARWIN_IPV6_DONTFRAG 62      /* netinet6/in6.h, named only under __APPLE_USE_RFC_3542 */
 #define LX_SO_RCVTIMEO_NEW 66
 #define LX_SO_SNDTIMEO_NEW 67
 #define LX_SYSCTL_RMEM_MAX 212992
@@ -103,6 +105,40 @@ int net_peer_is_family(lkd_fdobj *o)
     return found;
 }
 
+/* Path MTU options (ip(7), ipv6(7)): every socket keeps what the guest set and reads it back. A datagram
+ * socket also gets the host's don't-fragment flag when Linux would send DF datagrams and never fragment
+ * them (IP_PMTUDISC_DO and PROBE, IPV6_DONTFRAG): Darwin's IP_DONTFRAG and IPV6_DONTFRAG do that, and
+ * answer EMSGSIZE beyond the MTU. The other values keep the host's default. Darwin's TCP does path MTU
+ * discovery by itself, so a stream socket only keeps the value. */
+static int64_t apply_dontfrag(lkd_fdobj *o, struct net_sock *sk)
+{
+    if (sk->type != LX_SOCK_DGRAM && sk->type != LX_SOCK_RAW) return 0;
+    int r;
+    if (sk->domain == LX_AF_INET) {
+        int m = atomic_load(&sk->pmtudisc);
+        int hv = m == LX_IP_PMTUDISC_DO || m == LX_IP_PMTUDISC_PROBE;
+        r = setsockopt(o->host_fd, IPPROTO_IP, IP_DONTFRAG, &hv, sizeof hv);
+    } else {
+        int m = atomic_load(&sk->pmtudisc6);
+        int hv = atomic_load(&sk->dontfrag6) || m == LX_IP_PMTUDISC_DO || m == LX_IP_PMTUDISC_PROBE;
+        r = setsockopt(o->host_fd, IPPROTO_IPV6, DARWIN_IPV6_DONTFRAG, &hv, sizeof hv);
+    }
+    return r < 0 ? LKD_HOST_ERR() : 0;
+}
+
+/* IP_MTU_DISCOVER is an IP option of AF_INET and AF_INET6 sockets (ipv6_setsockopt hands SOL_IP to
+ * ip_setsockopt); the IPv6 ones belong to AF_INET6 sockets only. */
+static int is_pmtu_opt(int level, int opt)
+{
+    return (level == LX_IPPROTO_IP && opt == LX_IP_MTU_DISCOVER) ||
+           (level == LX_IPPROTO_IPV6 && (opt == LX_IPV6_MTU_DISCOVER || opt == LX_IPV6_DONTFRAG));
+}
+
+static int pmtu_opt_applies(const struct net_sock *sk, int level)
+{
+    return sk->domain == LX_AF_INET6 || (sk->domain == LX_AF_INET && level == LX_IPPROTO_IP);
+}
+
 static int64_t put_opt(uint64_t optval, uint64_t optlen_gva, const void *v, uint32_t vlen, int32_t ulen)
 {
     uint32_t n = (uint32_t)ulen < vlen ? (uint32_t)ulen : vlen;
@@ -165,6 +201,12 @@ LKD_SYSCALL(getsockopt)
     if ((level == LX_IPPROTO_IP && opt == LX_IP_RECVERR) || (level == LX_IPPROTO_IPV6 && opt == LX_IPV6_RECVERR)) {
         if (sk->domain != LX_AF_INET && sk->domain != LX_AF_INET6) { r = -LX_ENOPROTOOPT; goto out; }
         v = (atomic_load(&sk->recverr) & (level == LX_IPPROTO_IP ? 1 : 2)) ? 1 : 0;
+        goto put_int;
+    }
+    if (is_pmtu_opt(level, opt)) {
+        if (!pmtu_opt_applies(sk, level)) { r = -LX_ENOPROTOOPT; goto out; }
+        v = level == LX_IPPROTO_IP ? atomic_load(&sk->pmtudisc)
+            : opt == LX_IPV6_MTU_DISCOVER ? atomic_load(&sk->pmtudisc6) : atomic_load(&sk->dontfrag6);
         goto put_int;
     }
     int hl, ho;
@@ -299,6 +341,21 @@ LKD_SYSCALL(setsockopt)
         int bit = level == LX_IPPROTO_IP ? 1 : 2;
         if (v) atomic_fetch_or(&sk->recverr, bit);
         else if (!(atomic_fetch_and(&sk->recverr, ~bit) & ~bit)) atomic_store(&sk->errq_errno, 0);
+        goto out;
+    }
+    if (is_pmtu_opt(level, opt)) {
+        /* Wine sets IP_DONTFRAGMENT through IP_MTU_DISCOVER and IPV6_DONTFRAG; Unity's .NET does it on every
+         * new socket and fails on an error. An IP option without a value reads as 0 (do_ip_setsockopt), an
+         * IPv6 one too (do_ipv6_setsockopt), but IPV6_MTU_DISCOVER needs an int. */
+        if (!pmtu_opt_applies(sk, level)) { r = -LX_ENOPROTOOPT; goto out; }
+        if (opt == LX_IPV6_DONTFRAG && level == LX_IPPROTO_IPV6) {
+            atomic_store(&sk->dontfrag6, v != 0);
+        } else {
+            if (level == LX_IPPROTO_IPV6 && !have_int) { r = -LX_EINVAL; goto out; }
+            if (v < LX_IP_PMTUDISC_DONT || v > LX_IP_PMTUDISC_OMIT) { r = -LX_EINVAL; goto out; }
+            atomic_store(level == LX_IPPROTO_IP ? &sk->pmtudisc : &sk->pmtudisc6, v);
+        }
+        r = apply_dontfrag(o, sk);
         goto out;
     }
     int hl, ho;

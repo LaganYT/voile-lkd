@@ -371,6 +371,68 @@ LT_TEST(ip_recverr)
     SC(T, close, u);
 }
 
+/* IP_MTU_DISCOVER, IPV6_MTU_DISCOVER and IPV6_DONTFRAG: Wine's IP_DONTFRAGMENT, which Unity's .NET sets on
+ * every socket it creates (Fall Guys could not reach its servers on ENOPROTOOPT). New sockets read
+ * IP_PMTUDISC_WANT, a set value reads back, a value past IP_PMTUDISC_OMIT is EINVAL, IPv6 options are refused
+ * on AF_INET, accept keeps the listener's values, and a UDP socket set to DO sends nothing past the MTU
+ * (ip(7), ipv6(7), net/ipv4/ip_sockglue.c, net/ipv6/ipv6_sockglue.c). */
+LT_TEST(path_mtu_options)
+{
+    int32_t v = 7, vl = 4, dont = LX_IP_PMTUDISC_DONT, want_do = LX_IP_PMTUDISC_DO, bad = 6, one = 1;
+    uint16_t port;
+    int srv = tcp_listener(&port);
+    LT_CHECK(srv >= 0);
+    LT_EQ(SC(T, getsockopt, srv, LX_IPPROTO_IP, LX_IP_MTU_DISCOVER, P(&v), P(&vl)), 0);
+    LT_EQ(v, LX_IP_PMTUDISC_WANT);
+    LT_EQ(SC(T, setsockopt, srv, LX_IPPROTO_IP, LX_IP_MTU_DISCOVER, P(&dont), 4), 0);   /* Mono's DontFragment = false */
+    LT_EQ(SC(T, getsockopt, srv, LX_IPPROTO_IP, LX_IP_MTU_DISCOVER, P(&v), P(&vl)), 0);
+    LT_EQ(v, LX_IP_PMTUDISC_DONT);
+    LT_ERRNO(SC(T, setsockopt, srv, LX_IPPROTO_IP, LX_IP_MTU_DISCOVER, P(&bad), 4), LX_EINVAL);
+    LT_ERRNO(SC(T, setsockopt, srv, LX_IPPROTO_IPV6, LX_IPV6_DONTFRAG, P(&one), 4), LX_ENOPROTOOPT);
+    int c = (int)SC(T, socket, LX_AF_INET, LX_SOCK_STREAM, 0);
+    struct lx_sockaddr_in a = loop4(port);
+    LT_EQ(SC(T, connect, c, P(&a), sizeof a), 0);
+    int acc = (int)SC(T, accept, srv, 0, 0);
+    LT_CHECK(acc >= 0);
+    v = 7;
+    LT_EQ(SC(T, getsockopt, acc, LX_IPPROTO_IP, LX_IP_MTU_DISCOVER, P(&v), P(&vl)), 0);
+    LT_EQ(v, LX_IP_PMTUDISC_DONT);
+    SC(T, close, acc); SC(T, close, c); SC(T, close, srv);
+
+    /* IPv6: a TCP socket takes IPV6_DONTFRAG (the option Wine sets there) and the IP one */
+    int t6 = (int)SC(T, socket, LX_AF_INET6, LX_SOCK_STREAM, 0);
+    LT_EQ(SC(T, setsockopt, t6, LX_IPPROTO_IPV6, LX_IPV6_DONTFRAG, P(&dont), 4), 0);
+    LT_EQ(SC(T, getsockopt, t6, LX_IPPROTO_IPV6, LX_IPV6_DONTFRAG, P(&v), P(&vl)), 0);
+    LT_EQ(v, 0);
+    LT_EQ(SC(T, setsockopt, t6, LX_IPPROTO_IP, LX_IP_MTU_DISCOVER, P(&dont), 4), 0);
+    LT_EQ(SC(T, getsockopt, t6, LX_IPPROTO_IPV6, LX_IPV6_MTU_DISCOVER, P(&v), P(&vl)), 0);
+    LT_EQ(v, LX_IP_PMTUDISC_WANT);
+    LT_ERRNO(SC(T, setsockopt, t6, LX_IPPROTO_IPV6, LX_IPV6_MTU_DISCOVER, P(&want_do), 2), LX_EINVAL);
+    SC(T, close, t6);
+    int u6 = (int)SC(T, socket, LX_AF_INET6, LX_SOCK_DGRAM, 0);
+    LT_EQ(SC(T, setsockopt, u6, LX_IPPROTO_IPV6, LX_IPV6_DONTFRAG, P(&one), 4), 0);
+    LT_EQ(SC(T, getsockopt, u6, LX_IPPROTO_IPV6, LX_IPV6_DONTFRAG, P(&v), P(&vl)), 0);
+    LT_EQ(v, 1);
+    SC(T, close, u6);
+
+    /* UDP with DO: a datagram past the loopback MTU is EMSGSIZE, as on Linux, where DONT sends it */
+    int u = (int)SC(T, socket, LX_AF_INET, LX_SOCK_DGRAM, 0);
+    struct lx_sockaddr_in ua = loop4(0);
+    LT_EQ(SC(T, bind, u, P(&ua), sizeof ua), 0);
+    struct lx_sockaddr_in to = loop4(port_of(u));
+    int32_t big = 32768;
+    LT_EQ(SC(T, setsockopt, u, LX_SOL_SOCKET, LX_SO_SNDBUF, P(&big), 4), 0);
+    static char dgram[17000];                                      /* lo0's MTU is 16384 */
+    LT_EQ(SC(T, setsockopt, u, LX_IPPROTO_IP, LX_IP_MTU_DISCOVER, P(&dont), 4), 0);
+    LT_EQ(SC(T, sendto, u, P(dgram), sizeof dgram, 0, P(&to), sizeof to), (int64_t)sizeof dgram);
+    LT_EQ(SC(T, setsockopt, u, LX_IPPROTO_IP, LX_IP_MTU_DISCOVER, P(&want_do), 4), 0);
+    LT_ERRNO(SC(T, sendto, u, P(dgram), sizeof dgram, 0, P(&to), sizeof to), LX_EMSGSIZE);
+    SC(T, close, u);
+    int x = (int)SC(T, socket, LX_AF_UNIX, LX_SOCK_DGRAM, 0);
+    LT_ERRNO(SC(T, setsockopt, x, LX_IPPROTO_IP, LX_IP_MTU_DISCOVER, P(&dont), 4), LX_ENOPROTOOPT);
+    SC(T, close, x);
+}
+
 LT_TEST(tcp_options)
 {
     int s = (int)SC(T, socket, LX_AF_INET, LX_SOCK_STREAM, 0);
@@ -489,6 +551,7 @@ int main(void)
     LT_RUN(sendmsg_recvmsg_iov);
     LT_RUN(dns_style_exchange);
     LT_RUN(ip_recverr);
+    LT_RUN(path_mtu_options);
     LT_RUN(tcp_options);
     LT_RUN(ipv6_loopback);
     LT_RUN(tcp_poll_states);

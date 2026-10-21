@@ -224,6 +224,7 @@ int net_sock_wrap(int hfd, int domain, int type, int protocol, uint32_t lx_flags
     sk->protocol = protocol;
     sk->owned_nonblock = owned;
     sk->abs_lock_fd = -1;
+    sk->pmtudisc = sk->pmtudisc6 = LX_IP_PMTUDISC_WANT;    /* inet_create, inet6_create (ip_no_pmtu_disc = 0) */
     int one = 1;
     setsockopt(hfd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
     if (owned) {
@@ -478,6 +479,10 @@ static int64_t do_accept(lkd_task *t, int fd, uint64_t addr, uint64_t alen, int 
     lkd_fdobj *n;
     e = net_sock_wrap(nfd, sk->domain, sk->type, sk->protocol, flags & LX_SOCK_NONBLOCK, 1, &n);
     if (e) { close(nfd); r = e; goto out; }
+    struct net_sock *nsk = n->priv;                         /* the clone keeps the listener's IP settings */
+    nsk->pmtudisc = atomic_load(&sk->pmtudisc);
+    nsk->pmtudisc6 = atomic_load(&sk->pmtudisc6);
+    nsk->dontfrag6 = atomic_load(&sk->dontfrag6);
     uint8_t lx[sizeof(struct lx_sockaddr_storage)];
     uint32_t lxlen = net_addr_to_linux((struct sockaddr *)&ss, sl, lx, sizeof lx);
     if (addr) {

@@ -55,6 +55,8 @@ struct net_sock {
     _Atomic int pending_err;        /* SO_ERROR consumed by poll, handed to the next SO_ERROR/connect */
     _Atomic int recverr;            /* IP_RECVERR (1), IPV6_RECVERR (2): errors are also queued (wine-4) */
     _Atomic int errq_errno;         /* the error queue: one entry (Linux queues several), 0 = empty */
+    _Atomic int pmtudisc, pmtudisc6; /* IP_MTU_DISCOVER, IPV6_MTU_DISCOVER: IP_PMTUDISC_* (WANT when created) */
+    _Atomic int dontfrag6;          /* IPV6_DONTFRAG */
     uint8_t errq_addr[sizeof(struct lx_sockaddr_in6)];   /* destination of the failed datagram (msg_name) */
     uint32_t errq_addrlen;
     int64_t rcvtimeo_ns, sndtimeo_ns; /* SO_RCVTIMEO / SO_SNDTIMEO, 0 = none */

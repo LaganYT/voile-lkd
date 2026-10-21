@@ -1099,6 +1099,14 @@ struct lx_inotify_event { int32_t wd; uint32_t mask, cookie, len; char name[]; }
 #define LX_IPV6_V6ONLY 26
 #define LX_IP_RECVERR 11
 #define LX_IPV6_RECVERR 25
+#define LX_IP_MTU_DISCOVER 10
+#define LX_IPV6_MTU_DISCOVER 23
+#define LX_IPV6_DONTFRAG 62
+#define LX_IP_PMTUDISC_DONT 0        /* the IPV6_PMTUDISC_* values are the same */
+#define LX_IP_PMTUDISC_WANT 1
+#define LX_IP_PMTUDISC_DO 2
+#define LX_IP_PMTUDISC_PROBE 3
+#define LX_IP_PMTUDISC_OMIT 5
 #define LX_SO_EE_ORIGIN_NONE 0
 #define LX_SO_EE_ORIGIN_LOCAL 1
 #define LX_SO_EE_ORIGIN_ICMP 2
