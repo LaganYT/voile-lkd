@@ -50,6 +50,7 @@ enum {
   WSD_WINDOW_SET_STYLE = 25, /* wsd_window_flag (value: WSD_STYLE_*): the content keeps its place on screen */
   WSD_WINDOW_MINIMIZE = 26, /* wsd_window_flag (value: 1 into the Dock, 0 back) */
   WSD_APP_ICON = 27,       /* wsd_app_icon + 1 fd: the Dock and Cmd-Tab icon */
+  WSD_OPEN_URL = 28,       /* UTF-8 http or https address: opened in the Mac's default browser */
 };
 
 /* server -> client */

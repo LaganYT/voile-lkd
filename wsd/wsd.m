@@ -1437,6 +1437,20 @@ static CAMetalLayer *make_metal_layer(void) {
     [self appIcon:m];
     break;
   }
+  case WSD_OPEN_URL: {
+    /* A link the game opens (the guest's xdg-open sends it): web addresses only, never a file or another app's
+     * scheme. The log names the host alone: the rest may hold a sign-in code. */
+    NSString *text = [[NSString alloc] initWithBytes:d length:n encoding:NSUTF8StringEncoding];
+    NSURL *url = text ? [NSURL URLWithString:text] : nil;
+    NSString *scheme = url.scheme.lowercaseString;
+    if (!url.host.length || !([scheme isEqualToString:@"https"] || [scheme isEqualToString:@"http"])) {
+      [self error:type code:-EINVAL];
+      break;
+    }
+    LOG("client %d: opening a %s link to %s", self.pid, scheme.UTF8String, url.host.UTF8String);
+    if (![NSWorkspace.sharedWorkspace openURL:url]) [self error:type code:-EIO];
+    break;
+  }
   case WSD_QUIT:
     LOG("client %d asked the server to quit", self.pid);
     restore_input_state();
