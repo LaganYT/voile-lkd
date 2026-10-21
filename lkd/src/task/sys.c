@@ -972,8 +972,7 @@ LKD_SYSCALL(prctl)
         return -LX_EINVAL;
     case LX_PR_SET_VMA: {
         if (a2 != PR_SET_VMA_ANON_NAME) return -LX_EINVAL;
-        char name[80];
-        const char *np = NULL;
+        char name[80], label[88];
         if (a5) {
             int64_t n = lkd_user_strn(a5, name, sizeof name);
             if (n == -LX_EFAULT) return -LX_EFAULT;
@@ -982,9 +981,9 @@ LKD_SYSCALL(prctl)
                 if ((unsigned char)name[i] < 0x20 || (unsigned char)name[i] > 0x7e || name[i] == '\\' ||
                     name[i] == '`' || name[i] == '$' || name[i] == '[' || name[i] == ']')
                     return -LX_EINVAL;
-            np = name;
         }
-        return lkd_mm_set_vma_name(t->mm, a3, a4, np ? np : "");
+        if (a5) snprintf(label, sizeof label, "[anon:%s]", name); /* as /proc/<pid>/maps shows it */
+        return lkd_mm_set_vma_name(t->mm, a3, a4, a5 ? label : "");
     }
     case PR_GET_AUXV: {
         if (a4 || a5) return -LX_EINVAL;
