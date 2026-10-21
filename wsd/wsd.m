@@ -3,8 +3,8 @@
  * presents client frames from shared memory through Metal, and forwards input events.
  * Wire format: wsd_protocol.h, PROTOCOL.md.
  *
- * Threading: everything runs on the main queue (AppKit + socket I/O through GCD sources);
- * Metal completion/presented handlers hop back to the main queue.
+ * Threading: everything runs on the main queue (AppKit + socket I/O through GCD sources), except the CoreAudio
+ * calls (g_audio_queue); Metal completion/presented handlers and audio errors hop back to the main queue.
  * Present path: shm fd -> mmap(MAP_SHARED) -> newBufferWithBytesNoCopy -> linear MTLTexture
  * (no CPU pixel copy) -> one render pass per display-link tick into the CAMetalLayer drawable.
  *
@@ -236,24 +236,61 @@ static OSStatus audio_render(void *ref, AudioUnitRenderActionFlags *flags, const
   return noErr;
 }
 
+/* CoreAudio calls can block: AudioOutputUnitStop waits out the render thread. On the main queue they held frames and
+ * input (2026-10-21: Rocket League reopened a stream every 0.45 s, and each frame was held 0.4 to 0.9 s), so a
+ * stream's unit is made, started, stopped and disposed in order on this queue. */
+static dispatch_queue_t g_audio_queue;
+
 @interface WsdAudio : NSObject
 @property uint32_t streamId;
-@property AudioComponentInstance unit;
+@property AudioComponentInstance unit; /* on g_audio_queue only */
 @property void *map;
 @property size_t mapLen;
 @property struct wsd_audio_rt *rt;
 @end
 @implementation WsdAudio
-- (void)dispose {
-  if (self.unit) {
-    AudioOutputUnitStop(self.unit); /* synchronous: the render callback is not running afterwards */
-    AudioUnitUninitialize(self.unit);
-    AudioComponentInstanceDispose(self.unit);
-    self.unit = NULL;
+/* On g_audio_queue: a default-output unit that plays the ring in the client's format. */
+- (OSStatus)setUp:(struct wsd_audio_open)o sample:(uint32_t)sample {
+  AudioComponentDescription desc = {kAudioUnitType_Output, kAudioUnitSubType_DefaultOutput,
+                                    kAudioUnitManufacturer_Apple, 0, 0};
+  AudioComponent comp = AudioComponentFindNext(NULL, &desc);
+  AudioComponentInstance unit = NULL;
+  OSStatus e = comp ? AudioComponentInstanceNew(comp, &unit) : -1;
+  if (e == noErr) {
+    AudioStreamBasicDescription f = {0};
+    f.mSampleRate = o.rate;
+    f.mFormatID = kAudioFormatLinearPCM;
+    f.mFormatFlags = kAudioFormatFlagIsPacked |
+                     (o.format == WSD_AUDIO_F32 ? kAudioFormatFlagIsFloat
+                      : o.format == WSD_AUDIO_U8 ? 0 : kAudioFormatFlagIsSignedInteger);
+    f.mFramesPerPacket = 1;
+    f.mChannelsPerFrame = o.channels;
+    f.mBitsPerChannel = sample * 8;
+    f.mBytesPerFrame = f.mBytesPerPacket = o.frame_bytes;
+    e = AudioUnitSetProperty(unit, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, 0, &f, sizeof(f));
   }
-  if (self.map) { munmap(self.map, self.mapLen); self.map = NULL; }
+  if (e == noErr) {
+    AURenderCallbackStruct cb = {audio_render, self.rt};
+    e = AudioUnitSetProperty(unit, kAudioUnitProperty_SetRenderCallback, kAudioUnitScope_Input, 0, &cb, sizeof(cb));
+  }
+  if (e == noErr) e = AudioUnitInitialize(unit);
+  self.unit = unit;
+  if (e != noErr) [self teardown];
+  return e;
+}
+/* On g_audio_queue. */
+- (void)teardown {
+  if (!self.unit) return;
+  AudioOutputUnitStop(self.unit); /* synchronous: the render callback is not running afterwards */
+  AudioUnitUninitialize(self.unit);
+  AudioComponentInstanceDispose(self.unit);
+  self.unit = NULL;
+}
+/* The ring outlives the unit: the client holds the stream until it closes it, and each block queued on
+ * g_audio_queue holds it until it ran, the teardown last. */
+- (void)dealloc {
+  if (self.map) munmap(self.map, self.mapLen);
   free(self.rt);
-  self.rt = NULL;
 }
 @end
 
@@ -856,7 +893,7 @@ static CAMetalLayer *make_metal_layer(void) {
   for (WsdWindow *w in self.windows.allValues) [w destroy];
   [self.windows removeAllObjects];
   [self.buffers removeAllObjects]; /* textures die after in-flight command buffers release them */
-  for (WsdAudio *a in self.audio.allValues) [a dispose];
+  for (WsdAudio *a in self.audio.allValues) dispatch_async(g_audio_queue, ^{ [a teardown]; });
   [self.audio removeAllObjects];
   for (NSNumber *f in self.fdQueue) close(f.intValue);
   [self.fdQueue removeAllObjects];
@@ -944,40 +981,24 @@ static CAMetalLayer *make_metal_layer(void) {
   rt->frame_bytes = o->frame_bytes;
   rt->silence = o->format == WSD_AUDIO_U8 ? 0x80 : 0;
   a.rt = rt;
-
-  AudioComponentDescription desc = {kAudioUnitType_Output, kAudioUnitSubType_DefaultOutput,
-                                    kAudioUnitManufacturer_Apple, 0, 0};
-  AudioComponent comp = AudioComponentFindNext(NULL, &desc);
-  AudioComponentInstance unit = NULL;
-  OSStatus e = comp ? AudioComponentInstanceNew(comp, &unit) : -1;
-  if (e == noErr) {
-    AudioStreamBasicDescription f = {0};
-    f.mSampleRate = o->rate;
-    f.mFormatID = kAudioFormatLinearPCM;
-    f.mFormatFlags = kAudioFormatFlagIsPacked |
-                     (o->format == WSD_AUDIO_F32 ? kAudioFormatFlagIsFloat
-                      : o->format == WSD_AUDIO_U8 ? 0 : kAudioFormatFlagIsSignedInteger);
-    f.mFramesPerPacket = 1;
-    f.mChannelsPerFrame = o->channels;
-    f.mBitsPerChannel = sample * 8;
-    f.mBytesPerFrame = f.mBytesPerPacket = o->frame_bytes;
-    e = AudioUnitSetProperty(unit, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, 0, &f, sizeof(f));
-  }
-  if (e == noErr) {
-    AURenderCallbackStruct cb = {audio_render, rt};
-    e = AudioUnitSetProperty(unit, kAudioUnitProperty_SetRenderCallback, kAudioUnitScope_Input, 0, &cb, sizeof(cb));
-  }
-  if (e == noErr) e = AudioUnitInitialize(unit);
-  a.unit = unit;
-  if (e != noErr) {
-    LOG("client %d: audio stream %u: AudioUnit setup failed (%d)", self.pid, o->stream_id, (int)e);
-    [a dispose];
-    [self error:WSD_AUDIO_OPEN code:-EIO];
-    return;
-  }
   self.audio[@(o->stream_id)] = a;
   LOG("client %d: audio stream %u: format %u, %u Hz, %u channels, ring %u frames", self.pid, o->stream_id, o->format,
       o->rate, o->channels, o->ring_frames);
+
+  struct wsd_audio_open open = *o;
+  pid_t pid = self.pid;
+  __weak WsdClient *weakSelf = self;
+  dispatch_async(g_audio_queue, ^{
+    OSStatus e = [a setUp:open sample:sample];
+    if (e == noErr) return;
+    LOG("client %d: audio stream %u: AudioUnit setup failed (%d)", pid, open.stream_id, (int)e);
+    dispatch_async(dispatch_get_main_queue(), ^{
+      WsdClient *c = weakSelf;
+      if (c.audio[@(open.stream_id)] != a) return; /* closed meanwhile */
+      [c.audio removeObjectForKey:@(open.stream_id)];
+      [c error:WSD_AUDIO_OPEN code:-EIO];
+    });
+  });
 }
 /* The Dock and Cmd-Tab icon of the whole server (one game per wsd): the client's program icon. */
 - (void)appIcon:(const struct wsd_app_icon *)a {
@@ -1206,19 +1227,31 @@ static CAMetalLayer *make_metal_layer(void) {
     if (!a) { [self error:type code:-ENOENT]; break; }
     if (type == WSD_AUDIO_START) {
       atomic_store_explicit(&a.rt->running, 1, memory_order_release);
-      OSStatus e = AudioOutputUnitStart(a.unit);
-      if (e != noErr) { LOG("client %d: audio stream %u: start failed (%d)", self.pid, m->stream_id, (int)e);
-                        [self error:type code:-EIO]; }
+      uint32_t stream = m->stream_id;
+      pid_t pid = self.pid;
+      __weak WsdClient *weakSelf = self;
+      dispatch_async(g_audio_queue, ^{
+        if (!a.unit) return; /* its setup failed: the client gets that error */
+        OSStatus e = AudioOutputUnitStart(a.unit);
+        if (e == noErr) return;
+        LOG("client %d: audio stream %u: start failed (%d)", pid, stream, (int)e);
+        dispatch_async(dispatch_get_main_queue(), ^{
+          WsdClient *c = weakSelf;
+          if (c && !c.dead) [c error:WSD_AUDIO_START code:-EIO];
+        });
+      });
     } else if (type == WSD_AUDIO_STOP) {
-      atomic_store_explicit(&a.rt->running, 0, memory_order_release);
-      AudioOutputUnitStop(a.unit);
+      atomic_store_explicit(&a.rt->running, 0, memory_order_release); /* silence from the next render on */
+      dispatch_async(g_audio_queue, ^{
+        if (a.unit) AudioOutputUnitStop(a.unit);
+      });
     } else if (type == WSD_AUDIO_RESET) {
       _Atomic uint64_t *wp = (_Atomic uint64_t *)&a.rt->ring->write_frames;
       atomic_store_explicit((_Atomic uint64_t *)&a.rt->ring->read_frames,
                             atomic_load_explicit(wp, memory_order_acquire), memory_order_release);
     } else {
-      [a dispose];
       [self.audio removeObjectForKey:@(m->stream_id)];
+      dispatch_async(g_audio_queue, ^{ [a teardown]; });
     }
     break;
   }
@@ -1546,6 +1579,7 @@ int main(int argc, char **argv) {
 
     g_dev = MTLCreateSystemDefaultDevice();
     g_queue = [g_dev newCommandQueue];
+    g_audio_queue = dispatch_queue_create("wsd.audio", DISPATCH_QUEUE_SERIAL);
     NSError *err = nil;
     id<MTLLibrary> lib = [g_dev newLibraryWithSource:kShader options:nil error:&err];
     MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
