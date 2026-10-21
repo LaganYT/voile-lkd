@@ -712,10 +712,15 @@ static CAMetalLayer *make_metal_layer(void) {
     });
   }];
   [cb presentDrawable:d];
-  if (!redisplay)
-    [cb addCompletedHandler:^(id<MTLCommandBuffer> c) {
+  /* The drawable does not keep its layer, which Metal's queue reads when it presents (the Metal HUD of the
+   * performance sharing does): a plane removed meanwhile, as when a game recreates its swapchain, would free it first
+   * (2026-10-21: wsd crashed in libMTLHud on a nil layer). The command buffer keeps it until it completes. */
+  CAMetalLayer *layer = self.layer;
+  [cb addCompletedHandler:^(id<MTLCommandBuffer> c) {
+    (void)layer;
+    if (!redisplay)
       dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf releaseBuffer:b serial:serial shown:YES]; });
-    }];
+  }];
   [cb commit];
 }
 
