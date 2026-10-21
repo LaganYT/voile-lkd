@@ -91,4 +91,11 @@ int lkd_sig_status(lkd_task *t, struct lkd_sig_status *out);
 /* ---- Fault delivery -------------------------------------------------------------------------- */
 /* lkd_fault() and lkd_signal_next() are declared in <lkd/lkd.h> and implemented by sig. */
 
+/* Syscall user dispatch (core's lkd_syscall): the forced, thread-directed SIGSYS of a syscall that was not
+ * run, si_code SYS_USER_DISPATCH with the address after its syscall instruction, its number and
+ * AUDIT_ARCH_X86_64; and force_exit_sig for a selector it cannot read or that holds neither ALLOW nor
+ * BLOCK. OWNER. */
+void lkd_sig_user_dispatch(lkd_task *t, uint64_t call_addr, int nr);
+void lkd_sig_force_exit(lkd_task *t, int signo);
+
 #endif /* LKD_SIG_H */

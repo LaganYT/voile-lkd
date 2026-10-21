@@ -487,6 +487,8 @@
 #define LX_TRAP_BRKPT 1
 #define LX_TRAP_TRACE 2
 #define LX_TRAP_HWBKPT 4
+#define LX_SYS_SECCOMP 1
+#define LX_SYS_USER_DISPATCH 2
 #define LX_CLD_EXITED 1
 #define LX_CLD_KILLED 2
 #define LX_CLD_DUMPED 3

@@ -904,6 +904,55 @@ LT_TEST(exec_state_survives_host_reexec)
     LT_ERRNO(sc(u, LKD_NR_rt_sigtimedwait, P(&set), P(&si), P(&zero), 8, 0, 0), LX_EAGAIN);
 }
 
+/* Syscall user dispatch as Wine sets it for Windows code (kernel/entry/syscall_user_dispatch.c): a syscall
+ * from outside the allowed region is not run, RAX keeps its number and a forced SIGSYS reports
+ * SYS_USER_DISPATCH, the address after the syscall instruction, the number and AUDIT_ARCH_X86_64. Inside the
+ * region, with the selector on ALLOW, or with dispatch off, the syscall runs. */
+LT_TEST(syscall_user_dispatch)
+{
+    lkd_task *t = mk();
+    fake_engine_reset();
+    LT_EQ(set_handler(t, LX_SIGSYS, 0x402000, LX_SA_SIGINFO, 0), 0);
+    LT_ERRNO(sc(t, LKD_NR_prctl, 59, 0, 1, 0, 0, 0), LX_EINVAL);             /* OFF takes no region */
+    LT_ERRNO(sc(t, LKD_NR_prctl, 59, 3, 0, 0, 0, 0), LX_EINVAL);             /* unknown mode */
+    LT_ERRNO(sc(t, LKD_NR_prctl, 59, 1, ~0ull, 2, 0, 0), LX_EINVAL);         /* region overflows */
+    LT_EQ(sc(t, LKD_NR_prctl, 59, 1, 0x700000000000ull, 0x100000000000ull, 0, 0), 0);
+    lkd_sysreq r = { LKD_NR_getpid, { 0 } };
+    int64_t rax;
+    fake_cpu_of(t)->regs.rip = 0x14000147b;
+    LT_EQ(lkd_syscall(t, &r, &rax), LKD_RETURN);
+    LT_EQ(rax, LKD_NR_getpid);
+    LT_CHECK(lkd_signal_pending(t));
+    LT_EQ(lkd_signal_next(t), 1);
+    lkd_delivery *d = &fake_last_delivery;
+    LT_EQ(d->signo, LX_SIGSYS);
+    LT_EQ(d->info.si_code, LX_SYS_USER_DISPATCH);
+    LT_EQ(d->info.u.sys.call_addr, 0x14000147b);
+    LT_EQ(d->info.u.sys.syscall, LKD_NR_getpid);
+    LT_EQ(d->info.u.sys.arch, LX_AUDIT_ARCH_X86_64);
+    LT_EQ(d->handler, 0x402000);
+    lkd_sig_set_mask(t, 0);
+    fake_cpu_of(t)->regs.rip = 0x7efff5dc0000;                               /* native code */
+    LT_EQ(lkd_syscall(t, &r, &rax), LKD_RETURN);
+    LT_EQ(rax, t->proc->pid);
+    LT_EQ(lkd_signal_pending(t), 0);
+    uint8_t selector = 0;                                                    /* ALLOW */
+    LT_EQ(sc(t, LKD_NR_prctl, 59, 1, 0x700000000000ull, 0x100000000000ull, P(&selector), 0), 0);
+    fake_cpu_of(t)->regs.rip = 0x14000147b;
+    LT_EQ(lkd_syscall(t, &r, &rax), LKD_RETURN);
+    LT_EQ(rax, t->proc->pid);
+    selector = 1;                                                            /* BLOCK */
+    LT_EQ(lkd_syscall(t, &r, &rax), LKD_RETURN);
+    LT_EQ(rax, LKD_NR_getpid);
+    LT_EQ(lkd_signal_next(t), 1);
+    LT_EQ(fake_last_delivery.signo, LX_SIGSYS);
+    lkd_sig_set_mask(t, 0);
+    LT_EQ(sc(t, LKD_NR_prctl, 59, 0, 0, 0, 0, 0), 0);
+    LT_EQ(lkd_syscall(t, &r, &rax), LKD_RETURN);
+    LT_EQ(rax, t->proc->pid);
+    LT_EQ(lkd_signal_pending(t), 0);
+}
+
 int main(void)
 {
     LT_EQ(fake_engine_init(), 0);
@@ -933,5 +982,6 @@ int main(void)
     LT_RUN(signalfd_blocking_read);
     LT_RUN(exec_resets_handlers);
     LT_RUN(exec_state_survives_host_reexec);
+    LT_RUN(syscall_user_dispatch);
     return lt_finish();
 }

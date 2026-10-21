@@ -126,6 +126,11 @@ struct lkd_task {
     int32_t sched_priority;
     uint64_t affinity;             /* cpu mask presented to the guest */
     uint64_t nvcsw, nivcsw;        /* context switch counters for /proc status */
+    /* Syscall user dispatch (PR_SET_SYSCALL_USER_DISPATCH, [owner]): a syscall made from outside
+     * [sud_offset, sud_offset + sud_len) while the selector byte, if any, says BLOCK is not run; core's
+     * lkd_syscall raises SIGSYS instead. Not inherited by clone or fork, cleared by exec. */
+    int sud_on;
+    uint64_t sud_offset, sud_len, sud_selector;
 
     /* Blocking support (core, src/core/block.c). */
     int wake_rd, wake_wr;          /* wake pipe; created by lkd_task_alloc, nonblocking, CLOEXEC */

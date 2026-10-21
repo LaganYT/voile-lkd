@@ -460,6 +460,40 @@ void lkd_fault(lkd_task *t, int signo, int si_code, uint64_t addr, uint64_t err,
     sig_wakeset_run(&ws);
 }
 
+/* trigger_sigsys (kernel/entry/syscall_user_dispatch.c): the syscall was not run. */
+void lkd_sig_user_dispatch(lkd_task *t, uint64_t call_addr, int nr)
+{
+    struct lx_siginfo info;
+    memset(&info, 0, sizeof info);
+    info.si_signo = LX_SIGSYS;
+    info.si_code = LX_SYS_USER_DISPATCH;
+    info.u.sys.call_addr = call_addr;
+    info.u.sys.syscall = nr;
+    info.u.sys.arch = LX_AUDIT_ARCH_X86_64;
+    sig_send_task_full(t, LX_SIGSYS, &info, 1, 1);
+}
+
+/* force_exit_sig: signo kills the process whatever its action (SI_KERNEL). */
+void lkd_sig_force_exit(lkd_task *t, int signo)
+{
+    if (!t || signo < 1 || signo > LX_NSIG) return;
+    struct lx_siginfo info;
+    memset(&info, 0, sizeof info);
+    info.si_signo = signo;
+    info.si_code = LX_SI_KERNEL;
+    struct lkd_sigproc *sp = sig_proc(t->proc);
+    struct lkd_sighand *h = sig_hand(t);
+    struct sig_wakeset ws = { 0 };
+    sig_lock(sp);
+    pthread_mutex_lock(&h->lock);
+    h->act[signo - 1].handler = LX_SIG_DFL;
+    sig_hand_update_masks(h);
+    pthread_mutex_unlock(&h->lock);
+    sig_force_locked(t, sp, signo, &info, &ws);
+    sig_unlock(sp);
+    sig_wakeset_run(&ws);
+}
+
 /* ---- /proc status ----------------------------------------------------------------------------- */
 
 int lkd_sig_status(lkd_task *t, struct lkd_sig_status *out)

@@ -347,6 +347,8 @@ void lkd_task_exec_commit(lkd_task *t)
     if (p->nthreads > 1) task_de_thread(t, &g_exec_old_tid);
     task_mm_release(t); /* exec_mm_release(): robust list and clear_child_tid of the old image */
     t->restart.fn = NULL;
+    t->sud_on = 0; /* syscall user dispatch does not survive exec */
+    t->sud_offset = t->sud_len = t->sud_selector = 0;
     const lkd_exec_image *img = g_pending.img;
     if (!img) return; /* commit called outside execve: nothing to rename */
     char comm[LKD_COMM_LEN];

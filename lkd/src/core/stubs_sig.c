@@ -69,6 +69,9 @@ LKD_WEAK void lkd_fault(lkd_task *t, int signo, int si_code, uint64_t addr, uint
             t ? t->tid : 0, signo, si_code, (unsigned long long)addr, (unsigned long long)err, (unsigned long long)trapno);
     abort();
 }
+LKD_WEAK void lkd_sig_user_dispatch(lkd_task *t, uint64_t call_addr, int nr)
+{ (void)call_addr; (void)nr; lkd_sig_send_task(t, LX_SIGSYS, NULL, 1); }
+LKD_WEAK void lkd_sig_force_exit(lkd_task *t, int signo) { lkd_sig_send_task(t, signo, NULL, 1); }
 
 /* futex */
 LKD_WEAK int lkd_futex_wake_addr(lkd_task *t, uint64_t gva, int nr, int private_hint)

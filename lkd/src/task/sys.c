@@ -784,6 +784,9 @@ LKD_SYSCALL(arch_prctl)
 #define PR_SET_IO_FLUSHER 57
 #define PR_GET_IO_FLUSHER 58
 #define PR_SET_SYSCALL_USER_DISPATCH 59
+#define PR_SYS_DISPATCH_OFF 0
+#define PR_SYS_DISPATCH_ON 1
+#define LX_TASK_SIZE_MAX 0x7ffffffff000ull /* the user address limit access_ok checks (x86-64, 4 levels) */
 #define PR_SCHED_CORE 62
 #define PR_SET_MEMORY_MERGE 67
 #define PR_GET_MEMORY_MERGE 68
@@ -946,8 +949,21 @@ LKD_SYSCALL(prctl)
     case PR_GET_MEMORY_MERGE:
         return 0;
     case PR_SET_SYSCALL_USER_DISPATCH:
-        lkd_log_once("prctl(PR_SET_SYSCALL_USER_DISPATCH) is not supported (no SIGSYS dispatch in LKD)");
-        return -LX_EINVAL;
+        /* task_set_syscall_user_dispatch (kernel/entry/syscall_user_dispatch.c): mode, offset, len,
+         * selector. Wine emulates the direct syscalls of Windows programs with it. */
+        if (a2 == PR_SYS_DISPATCH_OFF) {
+            if (a3 || a4 || a5) return -LX_EINVAL;
+        } else if (a2 == PR_SYS_DISPATCH_ON) {
+            if (a3 && a3 + a4 <= a3) return -LX_EINVAL;
+            if (a5 >= LX_TASK_SIZE_MAX) return -LX_EFAULT; /* access_ok */
+        } else {
+            return -LX_EINVAL;
+        }
+        t->sud_offset = a3;
+        t->sud_len = a4;
+        t->sud_selector = a5;
+        t->sud_on = a2 == PR_SYS_DISPATCH_ON;
+        return 0;
     case PR_SCHED_CORE:
         return -LX_EINVAL;
     case LX_PR_SET_MDWE:

@@ -98,8 +98,32 @@ void lkd_core_register_syscalls(void)
     LKD_REGISTER(restart_syscall);
 }
 
+/* syscall_user_dispatch (kernel/entry/syscall_user_dispatch.c), checked before ptrace as Linux does: is the
+ * syscall to be turned into SIGSYS instead of run? The selector byte is read at each syscall: 0 ALLOW, 1
+ * BLOCK, anything else kills the process with SIGSYS, an unreadable one with SIGSEGV. */
+static int user_dispatch(lkd_task *t, uint64_t nr)
+{
+    const lkd_engine_ops *ops = lkd_engine();
+    lkd_regs r;
+    if (!ops || !ops->get_regs || ops->get_regs(t, &r) < 0) return 0;
+    if (r.rip - t->sud_offset < t->sud_len) return 0; /* the address after the syscall instruction */
+    if (t->sud_selector) {
+        uint8_t state;
+        if (lkd_user_read(t->sud_selector, &state, 1)) { lkd_sig_force_exit(t, LX_SIGSEGV); return 1; }
+        if (state == 0) return 0;
+        if (state != 1) { lkd_sig_force_exit(t, LX_SIGSYS); return 1; }
+    }
+    lkd_sig_user_dispatch(t, r.rip, (int)nr);
+    return 1;
+}
+
 lkd_disp lkd_syscall(lkd_task *t, const lkd_sysreq *in, int64_t *rax)
 {
+    /* A dispatched syscall is not run and RAX keeps its number (syscall_rollback). */
+    if (t->sud_on && user_dispatch(t, in->nr)) {
+        *rax = (int64_t)in->nr;
+        return LKD_RETURN;
+    }
     lkd_sysreq rq = *in;
     uint64_t orig_nr = in->nr;
     lkd_disp disp = LKD_RETURN;
