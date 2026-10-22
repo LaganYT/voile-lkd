@@ -567,3 +567,15 @@ Correctifs :
 - Neptune (`bce5c33`, dépôt neptune). Un Present de test regarde de nouveau l'image que prendra le prochain Present : si elle est rendue, la série est effacée et le test répond S_OK. Swapchains D3D11 et D3D12.
 
 Vérifications : `wsd_overlay` et `wsd_client` passent. Avec le nouveau wsd, la fenêtre hors écran ne donne plus aucune expiration. L'utilisateur a refait le scénario sur Rocket League et Fall Guys : le jeu reprend. Installés à la main dans le runtime de dev : wsd `6e6d4a4b` (sauvegarde `wsd.9cb05490`) et `windows/{d3d11,dxgi,d3d12}.dll` (sauvegardes `*.dll.20261015`).
+
+## Dead by Daylight sur le moteur Linux : limite de fils, une commande Neptune trop courte et une swapchain 10 bits (2026-10-22)
+
+Contexte. Dead by Daylight (Epic, Unreal 5, Easy Anti-Cheat), moteur Linux choisi dans les réglages, DXMT. Easy Anti-Cheat charge son module Linux (`anticheatlauncher.log` : « Easy Anti-Cheat successfully loaded in-game »). Trois blocages l'un après l'autre, chacun trouvé dans le log du jeu.
+
+1. Crash au démarrage. MESURE : `CrashContext.runtime-xml` donne `EXCEPTION_ACCESS_VIOLATION reading address 0x0` à 0 s ; avec `+seh` la faute est dans le jeu (rip 0x14140ecc8, rax 0), juste après `lkd: clone: 300 threads in one process, refusing more (-EAGAIN)`. INFERE : le jeu lit le handle nul du fil refusé. Correctif `4095e5d` : 512 fils par processus. 512 est la taille de `SIG_WAKESET_MAX` (une sortie de groupe réveille encore chaque fil) ; à environ 280 Mio d'espace d'adressage hôte par fil FEX, 512 fils tiennent dans les 576 Gio sous la fenêtre invitée. La règle des tests ne change pas (jamais plus de 300 fils).
+2. Écran noir en plein écran. MESURE : `neptune: ring fatal error`, et côté serveur de rendu `failed to peek 8 bytes` puis `dispatch error for cmd_type=0xff004c1b`, soit `ID3D11DeviceContext::OMSetRenderTargetsAndUnorderedAccessViews`. LU : la taille calculée comptait 8 octets par handle même sans tableau ; avec un compte KEEP (0xFFFFFFFF) la somme tronquée à 32 bits valait exactement 8 octets de moins que ce que l'encodeur écrit, et l'hôte lit les commandes bout à bout sans regarder `cmd_size`. Correctif neptune `e34ced6`.
+3. Couleurs en bandes, rouge devenu bleu. MESURE : swapchain `fmt=24` (`DXGI_FORMAT_R10G10B10A2_UNORM`) et `shared texture: unmapped DXGI format 24, assuming BGRA8`. Correctifs : neptune `acda52d` (format virgl 8), voile-wine `8fabd470e2c` (nptunix, format wsd 3) et wsd `e1adcf7` (`MTLPixelFormatRGB10A2Unorm`, échantillonné vers le drawable BGRA8).
+
+Écarté : installer le VC++ de l'installateur du jeu (14.29) dans le préfixe Linux. Le `msvcp140` de Wine annonce 14.51 et le jeu est lié avec 14.44 ; un `msvcp140` natif plus ancien que 14.40 fait justement planter `_Mtx_lock` sur un pointeur nul.
+
+Vérification : l'utilisateur a lancé le jeu, menus aux bonnes couleurs. Reste : le jeu saccade, non mesuré. Installés à la main dans le runtime de dev : `fexdarwin-run` `f8008d33` (sauvegarde `.2a763995`), wsd `e9530034` (sauvegarde `wsd.e293795e`), `nptunix.so` `772e9151` (sauvegarde `.19f082eb`), `windows/{d3d11,dxgi,d3d12}.dll` (sauvegardes `*.dll.20261022`).
