@@ -548,3 +548,22 @@ MESURE, en 2560×1440, trois parties de 3 à 6 minutes de jeu, profil par fil (`
 Écarté, attente active de 5 µs avant de dormir dans `fx_sleep` (futex et ntsync). Témoin `w36_syncpp` : l'aller-retour ntsync passe de 8,4 à 3,1 µs, le futex privé de 8,0 à 0,16 µs ; tests LKD, témoins et EAC de Rocket League sans régression. En jeu : 32 i/s, 6,7 cœurs au lieu de 6,0 ; les attentes futex du fil principal raccourcissent (60 à 45 µs) mais ses appels ntsync s'allongent (6,4 à 8,0 µs), l'attente active s'ajoutant à celles qui dorment quand même. Pas de gain : le changement n'est pas gardé.
 
 Reste à mesurer : quelles requêtes le fil principal envoie à wineserver 2 500 fois par seconde.
+
+## Rocket League figé après un changement d'espace (2026-10-22, issue Obelisk #14)
+
+Contexte. Un joueur (JAWE-B15S, M4, macOS 27.2) et l'utilisateur : passer sur un autre espace, cliquer une autre fenêtre puis revenir laisse Rocket League figé pour de bon, seulement sur le moteur Linux. Dans le log de l'utilisateur (16:56), nptunix s'arrête à 411 presents alors que Neptune continue d'envoyer des tampons de sommets : le jeu dessine encore mais ne présente plus.
+
+Cause, en deux temps :
+- wsd. Quand macOS ne montre plus la fenêtre (recouverte, sur un autre espace), il ne reprend plus ses drawables, et `[CAMetalLayer nextDrawable]` bloque la file principale jusqu'à 1 s (`allowsNextDrawableTimeout`). Pendant ce temps aucun message n'est lu et aucun EV_RELEASE ne part. La porte de réutilisation de Neptune (100 ms par image) expire plusieurs fois de suite et, au bout de 4, `Present` rend `DXGI_STATUS_OCCLUDED`.
+- Neptune. `Present(DXGI_PRESENT_TEST)` rendait OCCLUDED tant que la série valait 4, et seule la porte d'un vrai Present la remettait à zéro. Rocket League (`RocketLeague.exe`, 0x140d695b0), une fois OCCLUDED reçu, n'appelle plus que des Present de test jusqu'à ce qu'un test réponde autre chose : il ne présentait plus jamais.
+
+MESURE (client de test hors dépôt qui imite Neptune : 3 images, porte de 100 ms, une image toutes les 4 ms, PING pour la file principale) :
+- Fenêtre recouverte par une seconde fenêtre wsd opaque, ancien wsd : PING au plus 880 ms, 9 expirations de la porte d'affilée. `nextDrawable` a duré 997 ms, puis 1002 ms à un autre essai, au moment où la fenêtre disparaît, et environ 8 ms ensuite tant qu'elle reste cachée. La notification d'occlusion est arrivée avant ce blocage au premier essai, après au second.
+- Fenêtre déplacée hors de l'écran : pas de blocage (le display link s'arrête), et le mailbox continue de rendre les images remplacées.
+- À l'écran, `nextDrawable` attend environ 8 ms à chaque tick à 240 Hz, donc la file principale est occupée la plupart du temps. Non traité.
+
+Correctifs :
+- wsd (`783b3c9`). Une fenêtre sans `NSWindowOcclusionStateVisible` garde son image en attente sans demander de drawable ; une image plus récente la remplace et la rend, comme avant. Une ligne de log à chaque changement d'occlusion. Le blocage d'environ 1 s au moment où la fenêtre disparaît reste possible quand la notification arrive après lui ; seul un `nextDrawable` hors de la file principale l'enlèverait.
+- Neptune (`bce5c33`, dépôt neptune). Un Present de test regarde de nouveau l'image que prendra le prochain Present : si elle est rendue, la série est effacée et le test répond S_OK. Swapchains D3D11 et D3D12.
+
+Vérifications : `wsd_overlay` et `wsd_client` passent. Avec le nouveau wsd, la fenêtre hors écran ne donne plus aucune expiration. L'utilisateur a refait le scénario sur Rocket League et Fall Guys : le jeu reprend. Installés à la main dans le runtime de dev : wsd `6e6d4a4b` (sauvegarde `wsd.9cb05490`) et `windows/{d3d11,dxgi,d3d12}.dll` (sauvegardes `*.dll.20261015`).
