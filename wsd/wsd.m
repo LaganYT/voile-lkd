@@ -586,6 +586,10 @@ static CAMetalLayer *make_metal_layer(void) {
 - (void)windowDidMove:(NSNotification *)n {
   [self sendFrame];
 }
+- (void)windowDidChangeOcclusionState:(NSNotification *)n {
+  BOOL shown = (self.window.occlusionState & NSWindowOcclusionStateVisible) != 0;
+  LOG("window %u %s", self.windowId, shown ? "shown by macOS" : "not shown by macOS: its frames wait");
+}
 /* Also sent after WINDOW_MINIMIZE (the animation ends later): the client ignores a state it already has. */
 - (void)windowDidMiniaturize:(NSNotification *)n {
   struct wsd_window_flag f = {self.windowId, 1};
@@ -649,6 +653,11 @@ static CAMetalLayer *make_metal_layer(void) {
   BOOL redisplay = NO;
   if (!b && self.redisplay && self.lastBuffer && !self.lastBuffer.detached) { b = self.lastBuffer; redisplay = YES; }
   if (!b || !self.window.visible) return;
+  /* A window macOS does not show (covered, on another Space, the screen locked) has its drawables no longer taken:
+   * nextDrawable would hold the main queue up to a second, and every message and buffer release with it (2026-10-22:
+   * a Space switch held Rocket League's frames, Neptune reported its swapchain occluded, and the game never presented
+   * again, Obelisk issue #14). The frame stays pending until the window shows again; a newer one still replaces it. */
+  if (!(self.window.occlusionState & NSWindowOcclusionStateVisible)) return;
   uint64_t tick_ns = now_ns();
   id<CAMetalDrawable> d = [self.layer nextDrawable];
   if (!d) return; /* keep it pending */
