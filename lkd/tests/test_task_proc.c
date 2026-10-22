@@ -116,7 +116,7 @@ LT_TEST(clone_validation)
     fake_spawn_result = 0;
     LT_EQ(T->proc->nthreads, 1);                                                  /* nothing left behind */
     int saved = T->proc->nthreads;
-    T->proc->nthreads = 300;                                                     /* machine-safety cap */
+    T->proc->nthreads = 512;                                                     /* machine-safety cap */
     LT_ERRNO(SC5(clone, GLIBC_THREAD_FLAGS, 0x7000f000, 0, 0, 0x7000e000), LX_EAGAIN);
     T->proc->nthreads = saved;
     struct lx_clone_args a;

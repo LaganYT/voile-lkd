@@ -219,7 +219,7 @@ int RunWithLkd(const Args& A, const HostOptions& Opt) {
   // (VM_MEMORY_GUARD), so the host has [0x7000000000, base). The first free address (0x7d80000000) left it 54 GiB, of
   // which libmalloc reserves 12 or 24 GiB, and each guest thread takes about 280 MiB (FEXCore's lookup cache, call-ret
   // stack, host stack): ELDEN RING's 110th thread found no room (MESURE 2026-10-10). From 1 TiB the host has 576 GiB,
-  // enough for LKD's 300 threads per process. Host mappings placed by ASLR can reach into the range, so the base is also
+  // enough for LKD's 512 threads per process. Host mappings placed by ASLR can reach into the range, so the base is also
   // past the end of the highest occupied region below the top, rounded up to 1 GiB.
   {
     constexpr uint64_t Top = 0x7fff'fe00'0000ULL;

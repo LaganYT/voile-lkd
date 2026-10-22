@@ -21,7 +21,10 @@
 const lkd_config *lkd_config_get(void);
 
 /* Machine-safety caps (docs/CONVENTIONS.md 10.5). Linux answers -EAGAIN at its own limits. */
-#define TASK_MAX_THREADS_PER_PROC 300
+/* Dead by Daylight (Unreal 5, 18 host CPUs) starts more than 300. 512 matches SIG_WAKESET_MAX, so a group exit still
+ * wakes every thread, and its ~280 MiB of host address space per thread fits fexdarwin's 576 GiB below the guest
+ * window. Tests still never start more than 300. */
+#define TASK_MAX_THREADS_PER_PROC 512
 #define TASK_MAX_CHILDREN 64
 #define TASK_MAX_LIVE_PROCS 96 /* lead, 2026-10-02: 332 leaked host processes panicked the Mac (VM map entry zone) */
 
