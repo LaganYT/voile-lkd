@@ -8,7 +8,7 @@ S=$(cd "$(dirname "$0")" && pwd)
 ZIG="${ZIG:-$(command -v zig || true)}"
 [ -x "$ZIG" ] || { echo "guest/build.sh: zig not found (set ZIG=<path to zig>)" >&2; exit 1; }
 mkdir -p "$S/bin"
-"$ZIG" cc -target x86_64-linux-gnu.2.36 -shared -fPIC -O2 -g0 -Wall -Wextra -Werror \
+"$ZIG" cc -target x86_64-linux-gnu.2.36 -shared -fPIC -O2 -g0 -fno-stack-protector -Wall -Wextra -Werror \
   -Wl,-soname,steam-hostpid.so -o "$S/bin/steam-hostpid.so" "$S/steam-hostpid.c"
 "$ZIG" cc -target x86_64-linux-gnu.2.36 -O2 -g0 -Wall -Wextra -Werror -I "$S/../wsd" \
   -o "$S/bin/xdg-open" "$S/xdg-open.c"

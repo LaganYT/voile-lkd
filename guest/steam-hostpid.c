@@ -7,8 +7,9 @@
  * 2 to 3 s later unless that pid is a live macOS process. Guest pids are LKD's own (2, 3, ...). Wine must keep them:
  * ntdll gives getpid() to wineserver (init_first_thread, unix_pid), which signals the process's threads with
  * tgkill(unix_pid, unix_tid) and reads it with process_vm_readv. So the library looks at who calls, not at which
- * process it is in. steamclient.so calls getpid through its PLT with a call instruction (22 sites, no tail call, in
- * build 1788652215), so the return address is inside steamclient.so.
+ * process it is in. steamclient.so calls getpid through its PLT with a call instruction (69 sites in the build Voile
+ * v26.3.0-17 ships; 3 more are unexported functions that jump to it, called from steamclient.so only), so the return
+ * address is inside steamclient.so.
  *
  * steamclient.so also signals the pid it got: syscall(SYS_tgkill, getpid(), tid, 0) tells it whether one of its threads
  * lives, and kill(pid, 0) whether a process it shares memory with does. The guest knows no macOS pid (ESRCH), so every
@@ -75,6 +76,9 @@ static pid_t guest_pid(pid_t pid)
     return pid > 0 && (pid_t)(c >> 32) == self && (pid_t)(uint32_t)c == pid ? self : pid;
 }
 
+/* Every syscall() of the process comes here, Wine's too. Its x86-64 signal handler calls syscall(SYS_arch_prctl,
+ * ARCH_SET_FS, ...) while %fs still holds the Windows TEB, so nothing here may read %fs: guest/build.sh builds the
+ * library without a stack protector, whose canary lives at %fs:0x28. */
 long syscall(long number, ...)
 {
     static long (*next)(long, ...);
