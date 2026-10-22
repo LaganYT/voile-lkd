@@ -73,7 +73,7 @@ enum {
   WSD_EV_ZOOM = 116,       /* wsd_window: the user pressed the zoom (green) button */
 };
 
-enum { WSD_FMT_BGRA8 = 1, WSD_FMT_RGBA8 = 2 };
+enum { WSD_FMT_BGRA8 = 1, WSD_FMT_RGBA8 = 2, WSD_FMT_RGB10A2 = 3 };
 
 enum {
   WSD_STYLE_TITLED = 1u << 0,

@@ -1047,8 +1047,10 @@ static CAMetalLayer *make_metal_layer(void) {
   if (!self.fdQueue.count) { [self error:WSD_BUFFER_ATTACH code:-EBADF]; return; }
   int fd = self.fdQueue.firstObject.intValue;
   [self.fdQueue removeObjectAtIndex:0];
+  /* All 4 bytes per pixel; sampling converts each to the BGRA8 drawable. */
   MTLPixelFormat pf = a->format == WSD_FMT_BGRA8 ? MTLPixelFormatBGRA8Unorm
-                      : a->format == WSD_FMT_RGBA8 ? MTLPixelFormatRGBA8Unorm : MTLPixelFormatInvalid;
+                      : a->format == WSD_FMT_RGBA8 ? MTLPixelFormatRGBA8Unorm
+                      : a->format == WSD_FMT_RGB10A2 ? MTLPixelFormatRGB10A2Unorm : MTLPixelFormatInvalid;
   NSUInteger align = pf != MTLPixelFormatInvalid ? [g_dev minimumLinearTextureAlignmentForPixelFormat:pf] : 1;
   struct stat st;
   size_t page = (size_t)getpagesize();
