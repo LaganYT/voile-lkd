@@ -579,3 +579,19 @@ Contexte. Dead by Daylight (Epic, Unreal 5, Easy Anti-Cheat), moteur Linux chois
 Écarté : installer le VC++ de l'installateur du jeu (14.29) dans le préfixe Linux. Le `msvcp140` de Wine annonce 14.51 et le jeu est lié avec 14.44 ; un `msvcp140` natif plus ancien que 14.40 fait justement planter `_Mtx_lock` sur un pointeur nul.
 
 Vérification : l'utilisateur a lancé le jeu, menus aux bonnes couleurs. Reste : le jeu saccade, non mesuré. Installés à la main dans le runtime de dev : `fexdarwin-run` `f8008d33` (sauvegarde `.2a763995`), wsd `e9530034` (sauvegarde `wsd.e293795e`), `nptunix.so` `772e9151` (sauvegarde `.19f082eb`), `windows/{d3d11,dxgi,d3d12}.dll` (sauvegardes `*.dll.20261022`).
+
+## Plein écran : la fenêtre du jeu restait devant les autres apps après Cmd+Tab (2026-10-23)
+
+Contexte. Rocket League en plein écran sur le moteur Linux : après Cmd+Tab, l'autre app devient active et prend le clavier et la souris, mais l'image du jeu reste devant elle. Le navigateur ouvert par un lien du jeu (`OPEN_URL`, `9d09a1d`) restait caché de la même façon.
+
+Cause. LU : `setFullscreenMode:` mettait la fenêtre au niveau `NSMainMenuWindowLevel + 1` (25) pour toute la durée du plein écran, et un niveau ne change pas quand l'app perd la main. Les options de présentation (Dock et barre de menus masqués) n'y sont pour rien : macOS ne les applique que tant que l'app est active. Le driver Mac de Wine fait l'inverse : `-[WineWindow minimumLevelForActive:]` ne monte une fenêtre plein écran qu'avec l'app active, et `adjustWindowLevels:NO` la redescend dans `applicationWillResignActive:`. Même famille : une fenêtre montrée par-dessus la fenêtre plein écran (dialogue, boîte de crash) restait au niveau normal, donc dessous, comme une fenêtre topmost (niveau 3).
+
+MESURE (client de test hors dépôt : trois fenêtres wsd, plein écran puis topmost puis dialogue, un clic et des Cmd+Tab postés, couches lues dans `CGWindowListCopyWindowInfo`) :
+- Ancien wsd : après Cmd+Tab, le jeu reste à 25 devant l'app active et le Dock. Le dialogue est à 0 et le topmost à 3, tous deux sous le jeu. Même sans avoir jamais été active (activation refusée), la fenêtre plein écran couvrait Safari.
+- Nouveau wsd : avec wsd active, topmost 26, dialogue 25, jeu 25, le dialogue devant le jeu. Après Cmd+Tab, le jeu et le dialogue passent à 0 derrière l'autre app et le Dock revient. Au retour, on retrouve le même ordre. Une fois la fenêtre du jeu détruite, le dialogue redescend à 0.
+
+Correctif wsd (`f41caa8`). `adjust_levels` reprend `adjustWindowLevels:` : de l'arrière vers l'avant, dans l'ordre du serveur de fenêtres (Space actif, topmost en tête), chaque fenêtre prend le niveau que son état demande et au moins celui des fenêtres derrière elle, et les topmost restent au-dessus des autres. La passe tourne quand wsd perd ou reprend la main, quand le Space actif change, et quand une fenêtre s'affiche, se cache, est détruite, ou entre ou sort du plein écran. Une fenêtre qui s'affiche prend d'abord le niveau de celle de devant, pour être placée devant elle.
+
+Hors de wsd : le driver (`wineobelisk.drv`) n'envoie pas l'ordre des fenêtres (`insert_after` ignoré) et ne lit `WS_EX_TOPMOST` qu'à la création.
+
+Vérification : l'utilisateur a testé Rocket League en plein écran (Cmd+Tab, lien ouvert depuis le jeu, retour au jeu). Installé à la main dans le runtime de dev : wsd `fdb3ba42` dans `v26.3.0-18` (sauvegarde `wsd.v26.3.0-18`).
