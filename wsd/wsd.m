@@ -192,11 +192,12 @@ static void probe_frame(WsdBuffer *b, uint64_t client_ns, uint64_t rx_ns) {
 @property NSRect overlayPx;
 @property NSRect savedFrame;
 @property NSWindowStyleMask savedStyle;
-@property NSWindowLevel savedLevel;
+@property BOOL topmost; /* WSD_STYLE_TOPMOST (HWND_TOPMOST): above the windows that are not */
 /* the mac keycodes the client was last told are down */
 @property(strong) NSMutableIndexSet *heldKeys;
 - (void)sendEvent:(uint32_t)type payload:(const void *)p len:(uint32_t)n extra:(NSData *)extra;
 - (void)noteKey:(uint32_t)code down:(BOOL)down;
+- (NSWindowLevel)levelForActive:(BOOL)active;
 @end
 
 /* Audio output stream (WSD_AUDIO_*): one default-output AudioUnit per stream, whose render callback reads the
@@ -316,6 +317,44 @@ static void sync_cursor(void) {
       if (w.stalled) hide = NO;
   if (hide && !g_cursor_hidden) { [NSCursor hide]; g_cursor_hidden = 1; }
   if (!hide && g_cursor_hidden) { [NSCursor unhide]; g_cursor_hidden = 0; }
+}
+
+/* The levels of wsd's windows on the active Space, set as Wine's Mac driver sets them (-[WineApplicationController
+ * adjustWindowLevels:]): back to front in the window server's order, each window takes the level its own state asks
+ * for (-levelForActive:) and at least the level of every window behind it, so that a window in front of a fullscreen
+ * one (a dialog, a crash box) rises with it instead of hiding under it, and topmost windows stay above all others.
+ * Windows on other Spaces keep theirs until that Space is the active one. */
+static void adjust_levels(BOOL active) {
+  NSMutableDictionary<NSNumber *, WsdWindow *> *byNumber = [NSMutableDictionary dictionary];
+  for (WsdClient *c in g_clients)
+    for (WsdWindow *w in c.windows.allValues)
+      if (w.window) byNumber[@(w.window.windowNumber)] = w;
+  NSMutableArray<WsdWindow *> *order = [NSMutableArray array]; /* front to back, the topmost windows first */
+  NSUInteger topmost = 0;
+  for (NSNumber *n in [NSWindow windowNumbersWithOptions:0]) {
+    WsdWindow *w = byNumber[n];
+    if (!w) continue;
+    if (w.topmost) [order insertObject:w atIndex:topmost++];
+    else [order addObject:w];
+  }
+  NSWindowLevel maxLevel = NSIntegerMin, maxOther = NSNormalWindowLevel;
+  WsdWindow *prev = nil;
+  for (WsdWindow *w in order.reverseObjectEnumerator) {
+    NSWindowLevel level = [w levelForActive:active], old = w.window.level;
+    if (w.topmost && level <= maxOther) level = maxOther + 1;
+    if (level < maxLevel) level = maxLevel;
+    else maxLevel = level;
+    if (!w.topmost && level > maxOther) maxOther = level;
+    if (level != old) {
+      w.window.level = level;
+      /* raised: to the back of its new level, still in front of the windows set before it; lowered: to the front of
+       * its new level, which going back to front keeps the order */
+      if (level < old) [w.window orderFront:nil];
+      else if (prev) [w.window orderWindow:NSWindowAbove relativeTo:prev.window.windowNumber];
+      else [w.window orderBack:nil];
+    }
+    prev = w;
+  }
 }
 
 /* The screen with the menu bar: the client's display, and the origin of the pixel coordinates wsd exchanges with it.
@@ -596,8 +635,18 @@ static CAMetalLayer *make_metal_layer(void) {
   [self sendEvent:WSD_EV_MINIMIZE payload:&f len:sizeof(f) extra:nil];
 }
 - (void)windowDidDeminiaturize:(NSNotification *)n {
+  [self orderInFront];
   struct wsd_window_flag f = {self.windowId, 0};
   [self sendEvent:WSD_EV_MINIMIZE payload:&f len:sizeof(f) extra:nil];
+}
+/* Shows the window in front of wsd's others: at the level of the front one first, which a window of its own level
+ * would stay under (a fullscreen window above the menu bar), then at the level adjust_levels gives it. */
+- (void)orderInFront {
+  NSWindow *front = [NSApp windowWithWindowNumber:[NSWindow windowNumbersWithOptions:0].firstObject.integerValue];
+  if (front && front != self.window && front.level > self.window.level) self.window.level = front.level;
+  [self.window makeKeyAndOrderFront:nil];
+  [self.window orderFrontRegardless]; /* cooperative activation may leave the app inactive */
+  adjust_levels(NSApp.active);
 }
 /* The client maximizes and restores the window itself (Win32 SC_MAXIMIZE) and then sets its frame. */
 - (BOOL)windowShouldZoom:(NSWindow *)window toFrame:(NSRect)frame {
@@ -622,7 +671,10 @@ static CAMetalLayer *make_metal_layer(void) {
   NSWindow *w = self.window;
   if (on && !w.miniaturized) {
     if (w.styleMask & NSWindowStyleMaskMiniaturizable) [w miniaturize:nil];
-    else [w orderOut:nil];
+    else {
+      [w orderOut:nil];
+      adjust_levels(NSApp.active);
+    }
   } else if (!on && w.miniaturized) {
     [w deminiaturize:nil];
   }
@@ -760,6 +812,16 @@ static CAMetalLayer *make_metal_layer(void) {
     [self sendFrame];
 }
 
+/* The level the window's own state asks for (adjust_levels may raise it). A fullscreen window rises above the menu
+ * bar and the Dock only while wsd is the active app, as in Wine's Mac driver (-[WineWindow minimumLevelForActive:]).
+ * A level outlives the activation: kept up after Cmd-Tab, the window covered the app the user went to, which had the
+ * keyboard and the mouse under the game's picture (2026-10-23, Rocket League in fullscreen). The presentation options
+ * need nothing of the kind: macOS applies them only while the app is active. */
+- (NSWindowLevel)levelForActive:(BOOL)active {
+  if (self.fullscreen && active) return NSMainMenuWindowLevel + 1;
+  return self.topmost ? NSFloatingWindowLevel : NSNormalWindowLevel;
+}
+
 - (void)setFullscreenMode:(BOOL)on {
   if (on == self.fullscreen) return;
   NSWindow *w = self.window;
@@ -767,9 +829,7 @@ static CAMetalLayer *make_metal_layer(void) {
   if (on) {
     self.savedFrame = w.frame;
     self.savedStyle = w.styleMask;
-    self.savedLevel = w.level;
     w.styleMask = NSWindowStyleMaskBorderless;
-    w.level = NSMainMenuWindowLevel + 1;
     [w setFrame:w.screen ? w.screen.frame : primary_screen().frame display:YES];
     @try {
       NSApp.presentationOptions = NSApplicationPresentationHideDock | NSApplicationPresentationHideMenuBar;
@@ -778,13 +838,13 @@ static CAMetalLayer *make_metal_layer(void) {
     }
   } else {
     w.styleMask = self.savedStyle;
-    w.level = self.savedLevel;
     [w setFrame:self.savedFrame display:YES];
     NSApp.presentationOptions = NSApplicationPresentationDefault;
   }
   [w makeFirstResponder:self.view];
   self.transitioning = NO;
   self.fullscreen = on;
+  adjust_levels(NSApp.active);
   [self logState:on ? "fullscreen-on" : "fullscreen-off"];
   [self sendResize];
 }
@@ -851,6 +911,7 @@ static CAMetalLayer *make_metal_layer(void) {
   [self.window orderOut:nil];
   [self.window close];
   self.window = nil;
+  adjust_levels(NSApp.active);
 }
 @end
 
@@ -948,7 +1009,8 @@ static CAMetalLayer *make_metal_layer(void) {
   w.window.tabbingMode = NSWindowTabbingModeDisallowed;
   w.window.title = title;
   w.window.acceptsMouseMovedEvents = YES;
-  if (c->style & WSD_STYLE_TOPMOST) w.window.level = NSFloatingWindowLevel;
+  w.topmost = (c->style & WSD_STYLE_TOPMOST) != 0;
+  w.window.level = [w levelForActive:NO];
   w.window.delegate = w;
   w.view = [[WsdView alloc] initWithFrame:NSMakeRect(0, 0, r.size.width, r.size.height)];
   w.view.owner = w;
@@ -1173,14 +1235,14 @@ static CAMetalLayer *make_metal_layer(void) {
     if (!w) break;
     if (m->value) {
       [NSApp activate];
-      [w.window makeKeyAndOrderFront:nil];
-      [w.window orderFrontRegardless]; /* cooperative activation may leave the app inactive */
+      [w orderInFront];
       [w sendResize];
       [w logState:"show"];
       __weak WsdWindow *ww = w;
       dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 1000000000), dispatch_get_main_queue(), ^{ [ww logState:"show+1s"]; });
     } else {
       [w.window orderOut:nil];
+      adjust_levels(NSApp.active);
     }
     break;
   }
@@ -1528,6 +1590,15 @@ static CAMetalLayer *make_metal_layer(void) {
   LOG("quit requested: asked %lu windows to close", (unsigned long)asked);
   return NSTerminateCancel;
 }
+/* The windows above the menu bar (fullscreen, and those in front of one) come down as wsd resigns, before the other
+ * app's windows come to the front (Wine's Mac driver also does it in -applicationWillResignActive:), and go back up
+ * once wsd is active again. */
+- (void)applicationWillResignActive:(NSNotification *)n {
+  adjust_levels(NO);
+}
+- (void)applicationDidBecomeActive:(NSNotification *)n {
+  adjust_levels(YES);
+}
 @end
 
 /* The application menu: the bundle's name (Obelisk starts wsd from a bundle named after the game), Hide and Quit. */
@@ -1645,6 +1716,13 @@ int main(int argc, char **argv) {
                                                        queue:nil usingBlock:^(NSNotification *note) {
       LOG("application quit requested (Dock or menu), restoring input state");
       restore_input_state();
+    }];
+
+    /* windows on the Space just shown may have kept a level of when wsd was active (adjust_levels) */
+    [NSWorkspace.sharedWorkspace.notificationCenter addObserverForName:NSWorkspaceActiveSpaceDidChangeNotification
+                                                                object:nil queue:NSOperationQueue.mainQueue
+                                                            usingBlock:^(NSNotification *note) {
+      adjust_levels(NSApp.active);
     }];
 
     [NSApplication sharedApplication];
