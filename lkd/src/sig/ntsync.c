@@ -168,6 +168,7 @@ static uint32_t hash_get(uint64_t ino)
 /* Linear probing deletion without tombstones: shift back the entries whose home lies before the hole. */
 static void hash_del(uint64_t ino)
 {
+    if (!ino) return;
     uint32_t i = hash_home(ino);
     while (g_nt->hash[i].ino && g_nt->hash[i].ino != ino) i = (i + 1) & (NT_HASH - 1);
     if (!g_nt->hash[i].ino) return;
@@ -209,6 +210,11 @@ static uint32_t slot_alloc(uint32_t type, uint64_t ino)
     o->gen = gen ? gen : 1;
     o->refs = 1;
     o->ino = ino;
+    /* A slot whose references leaked (a process that exited without releasing it) keeps the inode of an anchor
+     * the host has closed, and the host hands that inode to a new pipe. The new anchor is the live one: drop the
+     * stale entry so the inode finds the new object, not the leaked one. */
+    uint32_t stale = hash_get(ino);
+    if (stale) { hash_del(ino); obj(stale)->ino = 0; }
     hash_put(ino, s);
     return s;
 }
