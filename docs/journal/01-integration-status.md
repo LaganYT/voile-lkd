@@ -595,3 +595,28 @@ Correctif wsd (`f41caa8`). `adjust_levels` reprend `adjustWindowLevels:` : de l'
 Hors de wsd : le driver (`wineobelisk.drv`) n'envoie pas l'ordre des fenêtres (`insert_after` ignoré) et ne lit `WS_EX_TOPMOST` qu'à la création.
 
 Vérification : l'utilisateur a testé Rocket League en plein écran (Cmd+Tab, lien ouvert depuis le jeu, retour au jeu). Installé à la main dans le runtime de dev : wsd `fdb3ba42` dans `v26.3.0-18` (sauvegarde `wsd.v26.3.0-18`).
+
+## Ce que le driver Mac de Wine faisait et que wsd n'avait pas (2026-10-23)
+
+Contexte. Comparaison de `winemac.drv` (celui du moteur Windows) avec wsd et `wineobelisk.drv` : notre driver avait 10 points d'entrée, winemac une cinquantaine. Repris en un lot, sauf les gros chantiers et le moins prioritaire.
+
+MESURE. Un programme de test (`wsdtest.exe`, hors dépôt) lancé par le `launch.sh` d'Obelisk sur un clone APFS du runtime ; côté Mac, un outil poste touches et clics puis lit les couches du serveur de fenêtres, le pointeur, `NSCursor.currentSystemCursor` et `pmset -g assertions`. Avant → après :
+- pavé numérique 5 : rien → `VK_NUMPAD5`, scan 0x4c. Touche `@ #` d'un clavier ISO : rien → scan 0x29 ; touche à droite de Maj gauche : scan 0x29 → 0x56.
+- Caps Lock basculé quatre fois : état Wine 1,1,1,1,0,0,0,0 → 1,0,1,0 (wineserver bascule à chaque appui, `set_input_key_state`).
+- `SetCursorPos(300,250)` : pointeur immobile → en 300,250.
+- curseur couleur 32×32 du jeu, `IDC_IBEAM` : flèche du Mac → l'image du jeu avec son point chaud, l'I-beam du Mac.
+- popup `WS_EX_NOACTIVATE` montré en `SW_SHOWNOACTIVATE` : devenait fenêtre clé, et l'`EV_FOCUS` qui suivait l'activait aussi dans Wine → laisse le premier plan au jeu.
+- `HWND_TOPMOST` après la création : ignoré → niveau 3, puis 0 avec `HWND_NOTOPMOST`.
+- `SetForegroundWindow` du jeu vers une fenêtre de derrière : le Mac ne suivait pas → elle passe devant.
+- `SPI_SETSCREENSAVEACTIVE` à FALSE puis TRUE : rien → assertion `PreventUserIdleDisplaySleep` prise puis rendue.
+
+Correctifs :
+- wsd (`0083ffe`). Caps Lock en appui et relâche à chaque changement ; `WSD_KEY_ISO` ; `CURSOR_WARP`, `CURSOR_DEFINE`, `CURSOR_SET` ; `WINDOW_SHOW` 2, `WSD_STYLE_NOACTIVATE`, `WINDOW_FOCUS`, `TOPMOST` appliqué ; `EV_DISPLAY` ; `SCREEN_SAVER` ; déconnexion, redémarrage ou arrêt du Mac en `NSTerminateLater` (avant : annulés tant qu'un jeu tournait) ; App Nap coupé.
+- voile-wine `a3ae9c1e336` (`wineobelisk.drv`). Curseurs (table des curseurs système de winemac, sinon l'image), `SetCursorPos`, `ActivateWindow`, montrer sans activer, `WS_EX_TOPMOST` suivi, `SystemParametersInfo`, `EV_DISPLAY` (le processus du bureau appelle `DisplayModeChanged`), table de touches complète de winemac avec l'échange ISO. Bug trouvé au test : `NtUserGetIconInfo` donne les longueurs en caractères, pas en octets ; l'I-beam n'était pas reconnu.
+- obelisk-input (`ded548b`). `IOPMAssertionDeclareUserActivity` sur les boutons et les sticks au-delà d'un tiers, au plus toutes les 5 s.
+
+Régression trouvée par l'utilisateur, corrigée avant le commit. Un jeu en plein écran exclusif D3D (Sugar, DXMT) ouvrait un lien : Safari devenait l'app active, mais restait sous l'image du jeu, et Discord aussi. LU : le swapchain de Neptune met la fenêtre en `HWND_TOPMOST` (`npt_swapchain.c:541`, comme DXMT et Windows), et wsd faisait flotter toute fenêtre topmost, même inactive. Règle reprise de winemac (`TOPMOST_FLOAT_INACTIVE_NONFULLSCREEN`, son réglage par défaut) : une fenêtre topmost plein écran ne flotte plus quand wsd n'est pas actif. MESURE : après Cmd+Tab vers Teams, fenêtre plein écran topmost au niveau 3 devant Teams, puis au niveau 0 derrière avec la règle.
+
+Non testé : App Nap, la déconnexion, la manette, un changement d'écran. Gros chantiers laissés de côté : disposition du clavier (AZERTY, `ToUnicodeEx`), presse-papiers, ordre des fenêtres (`insert_after`) et multi-écran. Reste aussi : Wine n'apprend pas que le jeu passe en arrière-plan (winemac met le premier plan sur le bureau, le jeu reçoit `WM_ACTIVATEAPP(FALSE)`) ; non fait, à décider.
+
+Installés à la main dans le runtime de dev `v26.3.0-18` : `engine/wsd` `bddd403a`, `engine/obelisk-input` `9ed3513b`, `wineobelisk.so` `051329fa` (originaux en `*.v26.3.0-18`).
