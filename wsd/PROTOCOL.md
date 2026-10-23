@@ -48,7 +48,7 @@ rules that the header cannot express.
 | 15 | DEBUG_INJECT | `wsd_window_flag` | test only: synthetic NSEvents fed to the window (1: key, modifiers, buttons, motion, wheel; 2: raw delta; 3: motion outside the clip rect). Every resulting event carries flag bit 31 (`WSD_KEY_SYNTHETIC`) |
 | 16 | QUIT | none | server exits |
 | 25 | WINDOW_SET_STYLE | `wsd_window_flag` | value = `WSD_STYLE_*`; the content keeps its place on screen. While fullscreen, the frame is applied when fullscreen ends; `TOPMOST` and `NOACTIVATE` at once |
-| 26 | WINDOW_MINIMIZE | `wsd_window_flag` | 1: into the Dock (`miniaturize:`; a window without a minimize button is ordered out), 0: back |
+| 26 | WINDOW_MINIMIZE | `wsd_window_flag` | 1: into the Dock (`miniaturize:`; a window without a minimize button is ordered out), 0: back (an ordered-out window is shown again without becoming key) |
 | 27 | APP_ICON | `wsd_app_icon` + 1 fd | BGRA8 pixels with straight alpha, at most 1024x1024, read once (`pread`): the application icon of the server (Dock, Cmd-Tab) |
 | 28 | OPEN_URL | UTF-8 address | an `http` or `https` address with a host, opened in the Mac's default browser (`NSWorkspace openURL:`); any other is rejected with `-EINVAL`. The guest's `xdg-open` sends it for the links a game opens |
 | 29 | CURSOR_WARP | `wsd_cursor_pos` | the pointer goes to x,y screen pixels (`CGWarpMouseCursorPosition`, without the 0.25 s macOS holds it still afterwards); mouse moves queued before it are dropped. Ignored while the server is not the active app and in relative mode |
@@ -80,6 +80,7 @@ rules that the header cannot express.
 | 115 | EV_MINIMIZE | `wsd_window_flag`: 1 the window went into the Dock, 0 it came back (also after WINDOW_MINIMIZE: the client ignores a state it already has) |
 | 116 | EV_ZOOM | `wsd_window`: the zoom (green) button; the client maximizes or restores and sets the frame itself |
 | 117 | EV_DISPLAY | `wsd_hello_reply`: the screen with the menu bar changed size, scale or refresh rate (not sent for its work area alone) |
+| 118 | EV_APP_DEACTIVATED | no payload: another app became the active one (Cmd-Tab, a click elsewhere, a link opened in the browser); the client puts the game in the background |
 
 All times are `clock_gettime_nsec_np(CLOCK_UPTIME_RAW)` nanoseconds, the same timebase as
 `mach_absolute_time` and `CACurrentMediaTime`.
@@ -91,6 +92,9 @@ the game's name; APP_ICON gives its icon. The application menu has Hide and Quit
 `EV_CLOSE` to every window instead of ending the server under a running game; with no window it ends the server. A
 logout, restart or shutdown also sends `EV_CLOSE` and waits (`NSTerminateLater`): it goes on once the last client is
 gone, and is refused if a client is still there after 30 seconds. App Nap is off for as long as the server runs.
+Coming back to the server (Cmd-Tab, the Dock) with none of its windows visible brings back the largest window in the
+Dock or minimized out of sight, which its client hears as `EV_MINIMIZE` 0: a game in exclusive fullscreen minimizes
+itself when it goes to the background.
 
 ## Levels
 

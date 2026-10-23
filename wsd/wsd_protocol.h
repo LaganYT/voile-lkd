@@ -77,6 +77,7 @@ enum {
   WSD_EV_MINIMIZE = 115,   /* wsd_window_flag (value: 1 the user sent the window to the Dock, 0 it came back) */
   WSD_EV_ZOOM = 116,       /* wsd_window: the user pressed the zoom (green) button */
   WSD_EV_DISPLAY = 117,    /* wsd_hello_reply: the main screen changed (size, scale, refresh rate or work area) */
+  WSD_EV_APP_DEACTIVATED = 118, /* no payload: another app became the active one (Cmd-Tab, a click, a link opened) */
 };
 
 enum { WSD_FMT_BGRA8 = 1, WSD_FMT_RGBA8 = 2, WSD_FMT_RGB10A2 = 3 };

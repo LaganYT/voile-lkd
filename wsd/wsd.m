@@ -201,6 +201,8 @@ static void probe_frame(WsdBuffer *b, uint64_t client_ns, uint64_t rx_ns) {
 @property NSRect overlayPx;
 @property NSRect savedFrame;
 @property NSWindowStyleMask savedStyle;
+/* WINDOW_MINIMIZE ordered it out (no minimize button, so not in the Dock): it shows again when restored */
+@property BOOL minimizedOut;
 @property BOOL topmost; /* WSD_STYLE_TOPMOST (HWND_TOPMOST): above the windows that are not */
 /* the mac keycodes the client was last told are down */
 @property(strong) NSMutableIndexSet *heldKeys;
@@ -759,14 +761,18 @@ static CAMetalLayer *make_metal_layer(void) {
 }
 - (void)minimize:(BOOL)on {
   NSWindow *w = self.window;
-  if (on && !w.miniaturized) {
+  if (on && !w.miniaturized && !self.minimizedOut) {
     if (w.styleMask & NSWindowStyleMaskMiniaturizable) [w miniaturize:nil];
     else {
+      self.minimizedOut = YES;
       [w orderOut:nil];
       adjust_levels(NSApp.active);
     }
   } else if (!on && w.miniaturized) {
     [w deminiaturize:nil];
+  } else if (!on && self.minimizedOut) {
+    self.minimizedOut = NO;
+    [self orderInFront:NO]; /* the client activates it if it should */
   }
 }
 - (void)logState:(const char *)when {
@@ -1395,6 +1401,7 @@ static CAMetalLayer *make_metal_layer(void) {
     NEED(wsd_window_flag);
     WsdWindow *w = [self win:m->window_id req:type];
     if (!w) break;
+    w.minimizedOut = NO;
     if (m->value) {
       if (m->value == 1) [NSApp activate];
       [w orderInFront:m->value == 1];
@@ -1815,6 +1822,34 @@ static void screens_changed(void) {
   for (WsdClient *c in g_clients) [c send:WSD_EV_DISPLAY payload:&r len:sizeof(r) extra:nil];
 }
 
+/* Back in wsd (Cmd-Tab, the Dock) with none of its windows visible: the largest of those in the Dock or minimized out
+ * of sight comes back, as Wine's Mac driver brings one back (-unminimizeWindowIfNoneVisible). A game in exclusive
+ * fullscreen minimizes itself when it goes to the background (Wine's D3D9, Unreal), and nothing was left to come back
+ * to. The client hears it as the user's restore (EV_MINIMIZE 0). */
+static void unminimize_if_none_visible(void) {
+  WsdWindow *best = nil;
+  double area = 0;
+  for (WsdClient *c in g_clients)
+    for (WsdWindow *w in c.windows.allValues) {
+      if (w.window.visible) return;
+      NSSize sz = w.window.frame.size;
+      if ((w.window.miniaturized || w.minimizedOut) && sz.width * sz.height > area) {
+        area = sz.width * sz.height;
+        best = w;
+      }
+    }
+  if (!best) return;
+  LOG("window %u comes back: no window was visible", best.windowId);
+  if (best.window.miniaturized) {
+    [best.window deminiaturize:nil]; /* -windowDidDeminiaturize: tells the client */
+    return;
+  }
+  best.minimizedOut = NO;
+  [best orderInFront:YES];
+  struct wsd_window_flag f = {best.windowId, 0};
+  [best sendEvent:WSD_EV_MINIMIZE payload:&f len:sizeof(f) extra:nil];
+}
+
 /* Whether the quit is a logout, a restart or a shutdown: the reason the Apple event gives, as Wine's Mac driver reads
  * it (-applicationShouldTerminate:). */
 static BOOL session_ending(void) {
@@ -1875,7 +1910,19 @@ static BOOL session_ending(void) {
 - (void)applicationWillResignActive:(NSNotification *)n {
   adjust_levels(NO);
 }
+/* The game goes to the background as it does on Windows: its client puts the desktop in the foreground, as Wine's Mac
+ * driver does on the same notification (APP_DEACTIVATED, macdrv_app_deactivated), and the game gets WM_ACTIVATEAPP
+ * (it may pause, mute or minimize itself). Wine kept the game in the foreground until then, whatever app the user
+ * was in. */
+- (void)applicationDidResignActive:(NSNotification *)n {
+  for (WsdClient *c in g_clients) [c send:WSD_EV_APP_DEACTIVATED payload:NULL len:0 extra:nil];
+}
+- (BOOL)applicationShouldHandleReopen:(NSApplication *)app hasVisibleWindows:(BOOL)flag {
+  unminimize_if_none_visible();
+  return YES;
+}
 - (void)applicationDidBecomeActive:(NSNotification *)n {
+  if (g_ever_active) unminimize_if_none_visible();
   g_ever_active = YES;
   WsdWindow *w = g_focus_wanted;
   g_focus_wanted = nil;
