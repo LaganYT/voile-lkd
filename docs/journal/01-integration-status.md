@@ -620,3 +620,19 @@ Régression trouvée par l'utilisateur, corrigée avant le commit. Un jeu en ple
 Non testé : App Nap, la déconnexion, la manette, un changement d'écran. Gros chantiers laissés de côté : disposition du clavier (AZERTY, `ToUnicodeEx`), presse-papiers, ordre des fenêtres (`insert_after`) et multi-écran. Reste aussi : Wine n'apprend pas que le jeu passe en arrière-plan (winemac met le premier plan sur le bureau, le jeu reçoit `WM_ACTIVATEAPP(FALSE)`) ; non fait, à décider.
 
 Installés à la main dans le runtime de dev `v26.3.0-18` : `engine/wsd` `bddd403a`, `engine/obelisk-input` `9ed3513b`, `wineobelisk.so` `051329fa` (originaux en `*.v26.3.0-18`).
+
+## Le jeu passe en arrière-plan quand une autre app passe devant (2026-10-23)
+
+Contexte. Le driver ignorait la perte de focus : pour Wine, le jeu restait au premier plan quelle que soit l'app où se trouvait l'utilisateur. Il ne recevait jamais `WM_ACTIVATEAPP(FALSE)` et ne pouvait pas se mettre en pause, couper son son ou se réduire comme sous Windows. winemac le fait (`APP_DEACTIVATED`, `macdrv_app_deactivated` : le premier plan passe au bureau).
+
+MESURE (programme de test hors dépôt par le `launch.sh` d'Obelisk ; retour au jeu en rouvrant l'app comme le Dock, le Cmd+Tab automatisé suivant l'ordre des apps récentes) :
+- avant : après Cmd+Tab, premier plan toujours au jeu, aucun `WM_ACTIVATEAPP` ; un jeu qui se réduit à la désactivation ne se réduisait jamais.
+- après : départ → `WM_ACTIVATEAPP` off, premier plan au bureau ; retour → `WM_ACTIVATEAPP` on, premier plan au jeu, fenêtre plein écran au niveau 25 ; le jeu qui se réduit disparaît, puis revient restauré avec le premier plan.
+
+Trouvé en route. LU : `set_foreground_window` du serveur (`queue.c:3831`) refuse le premier plan à un processus qui ne l'a pas et dont la file n'a pas d'entrée utilisateur plus récente. Le `NtUserSetForegroundWindow` du thread d'événements ne marchait que parce que le jeu n'avait jamais perdu le premier plan ; une fois le bureau au premier plan, le retour était refusé. Comme `macdrv_window_got_focus`, le focus passe maintenant par un message à la fenêtre, dont le thread prend le premier plan avec `NtUserSetForegroundWindowInternal`. Une fenêtre encore réduite le prend après le `SC_RESTORE` posté avant.
+
+Correctifs :
+- wsd (`8d8ab8d`). `EV_APP_DEACTIVATED` à chaque client quand wsd n'est plus actif ; une fenêtre sans bouton de réduction réduite par le client est marquée, et revient avec `WINDOW_MINIMIZE` 0 ; au retour (activation ou clic dans le Dock) sans fenêtre visible, la plus grande réduite revient (`-unminimizeWindowIfNoneVisible` de winemac).
+- voile-wine `29abf1029b0`. `EV_APP_DEACTIVATED` : relâche du curseur et premier plan au bureau dans le processus qui l'a ; focus par `WM_OBELISK_TAKE_FOCUS` ; toute fenêtre réduite passe par `WINDOW_MINIMIZE`.
+
+Vérification : l'utilisateur a essayé ses jeux. Installés à la main dans le runtime de dev `v26.3.0-18` : `engine/wsd` `0801e582`, `wineobelisk.so` `da9930a6`.
